@@ -4,6 +4,8 @@
 Uso tipico:
     python main.py                  # abre la pantalla de configuracion
     python main.py --n 8            # arranca directamente en 8 x 8
+    python main.py --n 8 --algoritmo-a jugador --algoritmo-b dfs
+                                    # seleccion de modelos por CLI
     python main.py --n 10 --diagnostico
                                     # imprime el estado inicial y sale
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import agentes
 import config
 import motor
 
@@ -25,7 +28,7 @@ def construir_analizador() -> argparse.ArgumentParser:
     """Define los argumentos aceptados por linea de comandos."""
     analizador = argparse.ArgumentParser(
         prog="dodgem",
-        description="Dodgem para dos jugadores humanos (Entrega 1).",
+        description="Dodgem con soporte para Jugador, BFS y DFS.",
     )
     analizador.add_argument(
         "--n", type=int, default=None, metavar="TAMANO",
@@ -38,6 +41,18 @@ def construir_analizador() -> argparse.ArgumentParser:
         "--diagnostico", action="store_true",
         help=("Imprime en consola el estado inicial y sus movimientos "
               "legales, sin abrir la interfaz. Util para depurar."),
+    )
+    analizador.add_argument(
+        "--algoritmo-a",
+        choices=agentes.ALGORITMOS_DISPONIBLES,
+        default=None,
+        help="Modelo del Jugador A: jugador, bfs o dfs.",
+    )
+    analizador.add_argument(
+        "--algoritmo-b",
+        choices=agentes.ALGORITMOS_DISPONIBLES,
+        default=None,
+        help="Modelo del Jugador B: jugador, bfs o dfs.",
     )
     return analizador
 
@@ -67,6 +82,10 @@ def imprimir_diagnostico(n: int) -> None:
 def main(argumentos=None) -> int:
     """Rutina principal. Devuelve el codigo de salida del proceso."""
     opciones = construir_analizador().parse_args(argumentos)
+    algoritmos = {
+        config.JUGADOR_A: opciones.algoritmo_a or agentes.ALGORITMO_JUGADOR,
+        config.JUGADOR_B: opciones.algoritmo_b or agentes.ALGORITMO_DFS,
+    }
 
     # Validacion temprana: si el usuario paso un n invalido, se avisa
     # con el mismo criterio que usa el motor.
@@ -92,7 +111,7 @@ def main(argumentos=None) -> int:
         )
         return 1
 
-    gui.lanzar(opciones.n)
+    gui.lanzar(opciones.n, algoritmos)
     return 0
 
 

@@ -63,7 +63,7 @@ DIVISOR_PARIDAD = 2
 RESTO_PARIDAD_REQUERIDO = 0
 
 #: Valor que n debe superar estrictamente (n > 4 segun el enunciado).
-TAMANO_MINIMO_EXCLUSIVO = 3
+TAMANO_MINIMO_EXCLUSIVO = 4
 
 #: Cota superior practica. No es una regla del juego, sino un limite
 #: para que la interfaz siga siendo legible. Subirlo es seguro: el
@@ -176,6 +176,24 @@ LIMITE_JUGADAS_SIN_PROGRESO = 100
 #: aplica movimientos que el mismo obtuvo de movimientos_legales(),
 #: y ahorrar esa validacion en miles de nodos es significativo.
 VALIDAR_MOVIMIENTOS_AL_APLICAR = True
+
+#: Limite de nodos explorados por turno para agentes BFS/DFS.
+BUSQUEDA_MAX_NODOS = 12000
+
+#: Profundidad maxima explorada por turno para agentes BFS/DFS.
+BUSQUEDA_MAX_PROFUNDIDAD = 18
+
+#: Retardo visual (ms) entre jugadas en modo computadora vs computadora.
+RETARDO_TURNO_AUTOMATICO_MS = 260
+
+#: Minimo de segundos permitido en el deslizador de velocidad.
+RETARDO_MINIMO_SEGUNDOS = 0.01
+
+#: Maximo de segundos permitido en el deslizador de velocidad.
+RETARDO_MAXIMO_SEGUNDOS = 1
+
+#: Paso de ajuste en segundos del deslizador.
+RETARDO_PASO_SEGUNDOS = 0.05
 
 
 # ---------------------------------------------------------------------

@@ -23,6 +23,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Dict, List, Optional, Tuple
 
+import agentes
 import config
 import motor
 
@@ -30,6 +31,47 @@ import motor
 # =====================================================================
 # COMPONENTES VISUALES REUTILIZABLES
 # =====================================================================
+
+
+def _algoritmos_por_defecto() -> Dict[str, str]:
+    """Configuracion inicial de algoritmos por jugador."""
+    return {
+        config.JUGADOR_A: agentes.ALGORITMO_JUGADOR,
+        config.JUGADOR_B: agentes.ALGORITMO_DFS,
+    }
+
+
+def _normalizar_algoritmos(
+    algoritmos: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    """Limpia un diccionario de algoritmos y garantiza valores validos."""
+    normalizados = _algoritmos_por_defecto()
+    if not algoritmos:
+        return normalizados
+    for jugador in config.JUGADORES:
+        valor = algoritmos.get(jugador)
+        if valor in agentes.ALGORITMOS_DISPONIBLES:
+            normalizados[jugador] = valor
+    return normalizados
+
+
+def _normalizar_retardo_ms(retardo_ms: Optional[int]) -> int:
+    """Ajusta el retardo automatico al rango permitido."""
+    minimo = int(round(config.RETARDO_MINIMO_SEGUNDOS * 1000.0))
+    maximo = int(round(config.RETARDO_MAXIMO_SEGUNDOS * 1000.0))
+    if retardo_ms is None:
+        retardo_ms = int(config.RETARDO_TURNO_AUTOMATICO_MS)
+    return max(minimo, min(maximo, int(retardo_ms)))
+
+
+def _etiqueta_modelo(algoritmo: str) -> str:
+    """Devuelve una etiqueta legible para el modelo seleccionado."""
+    nombres = {
+        agentes.ALGORITMO_JUGADOR: "Jugador",
+        agentes.ALGORITMO_BFS: "BFS",
+        agentes.ALGORITMO_DFS: "DFS",
+    }
+    return nombres.get(algoritmo, algoritmo.upper())
 
 
 def _familia_tipografica(raiz: tk.Misc) -> str:
@@ -171,7 +213,16 @@ class PantallaConfiguracion(tk.Frame):
         self._aplicacion = aplicacion
         self._familia = familia
         self._n_elegido = config.TAMANO_POR_DEFECTO
+        self._retardo_ms = _normalizar_retardo_ms(None)
         self._chips: Dict[int, BotonPastel] = {}
+        self._algoritmos = _algoritmos_por_defecto()
+        self._chips_algoritmo: Dict[str, Dict[str, BotonPastel]] = {
+            config.JUGADOR_A: {},
+            config.JUGADOR_B: {},
+        }
+        self._texto_velocidad = tk.StringVar(value="")
+        self._lienzo_scroll: Optional[tk.Canvas] = None
+        self._ventana_scroll: Optional[int] = None
 
         self._construir()
 
@@ -179,8 +230,43 @@ class PantallaConfiguracion(tk.Frame):
 
     def _construir(self) -> None:
         paleta = config.PALETA
-        centro = tk.Frame(self, bg=paleta["fondo_ventana"])
-        centro.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        contenedor = tk.Frame(self, bg=paleta["fondo_ventana"])
+        contenedor.pack(fill=tk.BOTH, expand=True)
+
+        self._lienzo_scroll = tk.Canvas(
+            contenedor,
+            bg=paleta["fondo_ventana"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self._lienzo_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        barra = tk.Scrollbar(
+            contenedor,
+            orient=tk.VERTICAL,
+            command=self._lienzo_scroll.yview,
+            relief=tk.FLAT,
+            bd=0,
+            troughcolor=paleta["fondo_ventana"],
+        )
+        barra.pack(side=tk.RIGHT, fill=tk.Y)
+        self._lienzo_scroll.configure(yscrollcommand=barra.set)
+
+        centro = tk.Frame(self._lienzo_scroll, bg=paleta["fondo_ventana"])
+        self._ventana_scroll = self._lienzo_scroll.create_window(
+            (0, 0),
+            window=centro,
+            anchor=tk.N,
+        )
+
+        self._lienzo_scroll.bind(
+            "<Configure>",
+            self._al_redimensionar_scroll,
+        )
+        centro.bind("<Configure>", self._actualizar_scrollregion)
+        self.bind("<Enter>", self._activar_scroll_rueda)
+        self.bind("<Leave>", self._desactivar_scroll_rueda)
 
         tk.Label(
             centro, text=config.TITULO_VENTANA.upper(),
@@ -195,12 +281,63 @@ class PantallaConfiguracion(tk.Frame):
         ).pack(pady=(2, 26))
 
         self._construir_tarjeta_tamano(centro)
+        self._construir_tarjeta_agentes(centro)
+        self._construir_tarjeta_velocidad(centro)
         self._construir_tarjeta_reglas(centro)
 
         BotonPastel(
             centro, "Comenzar partida", self._comenzar, self._familia,
             variante="primario", tamano_fuente=13,
         ).pack(pady=(22, 0), ipadx=10)
+
+    def _actualizar_scrollregion(self, _evento=None) -> None:
+        """Sincroniza el area desplazable con el alto real del contenido."""
+        if self._lienzo_scroll is None:
+            return
+        self._lienzo_scroll.configure(
+            scrollregion=self._lienzo_scroll.bbox(tk.ALL)
+        )
+
+    def _al_redimensionar_scroll(self, evento) -> None:
+        """Mantiene centrado el contenido al cambiar tamano."""
+        if self._lienzo_scroll is None or self._ventana_scroll is None:
+            return
+        self._lienzo_scroll.itemconfigure(
+            self._ventana_scroll,
+            width=evento.width,
+        )
+        self._lienzo_scroll.coords(
+            self._ventana_scroll,
+            evento.width / 2.0,
+            0,
+        )
+
+    def _activar_scroll_rueda(self, _evento) -> None:
+        """Activa desplazamiento por rueda mientras el cursor este dentro."""
+        self.bind_all("<MouseWheel>", self._al_rueda_mouse)
+        self.bind_all("<Button-4>", self._al_rueda_linux)
+        self.bind_all("<Button-5>", self._al_rueda_linux)
+
+    def _desactivar_scroll_rueda(self, _evento) -> None:
+        """Desactiva el enganche global de rueda al salir del panel."""
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
+
+    def _al_rueda_mouse(self, evento) -> None:
+        """Scroll para Windows/macOS."""
+        if self._lienzo_scroll is None:
+            return
+        delta = int(-evento.delta / 120)
+        if delta != 0:
+            self._lienzo_scroll.yview_scroll(delta, "units")
+
+    def _al_rueda_linux(self, evento) -> None:
+        """Scroll para entornos Linux/X11."""
+        if self._lienzo_scroll is None:
+            return
+        direccion = -1 if evento.num == 4 else 1
+        self._lienzo_scroll.yview_scroll(direccion, "units")
 
     def _construir_tarjeta_tamano(self, maestro: tk.Misc) -> None:
         paleta = config.PALETA
@@ -266,6 +403,105 @@ class PantallaConfiguracion(tk.Frame):
         self._mensaje.pack(anchor=tk.W, padx=22, pady=(0, 14))
 
         self._elegir(self._n_elegido)
+
+    def _construir_tarjeta_agentes(self, maestro: tk.Misc) -> None:
+        """Permite elegir el modelo (Jugador, BFS o DFS) por bando."""
+        paleta = config.PALETA
+        tarjeta = _crear_tarjeta(maestro)
+        tarjeta.pack(fill=tk.X, pady=(0, 14))
+
+        tk.Label(
+            tarjeta, text="Modelos de busqueda (CPU vs CPU)",
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_principal"],
+            font=(self._familia, 12, "bold"),
+        ).pack(anchor=tk.W, padx=22, pady=(16, 2))
+
+        tk.Label(
+            tarjeta,
+            text="Selecciona Jugador, BFS o DFS para cada jugador.",
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_secundario"],
+            font=(self._familia, 10),
+        ).pack(anchor=tk.W, padx=22)
+
+        nombres = {
+            agentes.ALGORITMO_JUGADOR: "Jugador",
+            agentes.ALGORITMO_BFS: "BFS",
+            agentes.ALGORITMO_DFS: "DFS",
+        }
+        for jugador in config.JUGADORES:
+            fila = tk.Frame(tarjeta, bg=paleta["fondo_tarjeta"])
+            fila.pack(anchor=tk.W, padx=22, pady=(10, 0))
+
+            tk.Label(
+                fila,
+                text="%s:" % config.NOMBRES_JUGADORES[jugador],
+                bg=paleta["fondo_tarjeta"], fg=paleta["texto_secundario"],
+                font=(self._familia, 10),
+            ).pack(side=tk.LEFT, padx=(0, 8))
+
+            for algoritmo in agentes.ALGORITMOS_DISPONIBLES:
+                chip = BotonPastel(
+                    fila,
+                    nombres[algoritmo],
+                    lambda j=jugador, a=algoritmo: self._elegir_algoritmo(j, a),
+                    self._familia,
+                    variante="chip",
+                    tamano_fuente=10,
+                )
+                chip.pack(side=tk.LEFT, padx=3)
+                self._chips_algoritmo[jugador][algoritmo] = chip
+
+            self._elegir_algoritmo(jugador, self._algoritmos[jugador])
+
+        tk.Frame(tarjeta, bg=paleta["fondo_tarjeta"], height=14).pack()
+
+    def _construir_tarjeta_velocidad(self, maestro: tk.Misc) -> None:
+        """Control deslizante de segundos entre jugadas automaticas."""
+        paleta = config.PALETA
+        tarjeta = _crear_tarjeta(maestro)
+        tarjeta.pack(fill=tk.X, pady=(0, 14))
+
+        tk.Label(
+            tarjeta, text="Velocidad de la partida",
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_principal"],
+            font=(self._familia, 12, "bold"),
+        ).pack(anchor=tk.W, padx=22, pady=(16, 2))
+
+        tk.Label(
+            tarjeta,
+            text="Tiempo en segundos entre turnos de CPU.",
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_secundario"],
+            font=(self._familia, 10),
+        ).pack(anchor=tk.W, padx=22)
+
+        escala = tk.Scale(
+            tarjeta,
+            from_=config.RETARDO_MINIMO_SEGUNDOS,
+            to=config.RETARDO_MAXIMO_SEGUNDOS,
+            resolution=config.RETARDO_PASO_SEGUNDOS,
+            orient=tk.HORIZONTAL,
+            showvalue=False,
+            length=300,
+            command=self._al_cambiar_velocidad,
+            bg=paleta["fondo_tarjeta"],
+            fg=paleta["texto_principal"],
+            troughcolor=paleta["fondo_panel"],
+            highlightthickness=0,
+            bd=0,
+            activebackground=paleta["boton_primario"],
+            font=(self._familia, 9),
+        )
+        escala.pack(anchor=tk.W, padx=22, pady=(8, 0))
+        escala.set(self._retardo_ms / 1000.0)
+
+        tk.Label(
+            tarjeta,
+            textvariable=self._texto_velocidad,
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_secundario"],
+            font=(self._familia, 10),
+        ).pack(anchor=tk.W, padx=22, pady=(4, 14))
+
+        self._actualizar_texto_velocidad()
 
     def _construir_tarjeta_reglas(self, maestro: tk.Misc) -> None:
         paleta = config.PALETA
@@ -340,7 +576,30 @@ class PantallaConfiguracion(tk.Frame):
             fg=config.PALETA["aviso_ok"])
 
     def _comenzar(self) -> None:
-        self._aplicacion.iniciar_partida(self._n_elegido)
+        self._aplicacion.iniciar_partida(
+            self._n_elegido,
+            dict(self._algoritmos),
+            self._retardo_ms,
+        )
+
+    def _elegir_algoritmo(self, jugador: str, algoritmo: str) -> None:
+        """Marca el algoritmo seleccionado para un jugador."""
+        self._algoritmos[jugador] = algoritmo
+        for nombre, chip in self._chips_algoritmo[jugador].items():
+            chip.marcar(nombre == algoritmo)
+
+    def _al_cambiar_velocidad(self, valor: str) -> None:
+        """Guarda el nuevo retardo elegido en segundos."""
+        self._retardo_ms = _normalizar_retardo_ms(
+            int(round(float(valor) * 1000.0))
+        )
+        self._actualizar_texto_velocidad()
+
+    def _actualizar_texto_velocidad(self) -> None:
+        segundos = self._retardo_ms / 1000.0
+        self._texto_velocidad.set(
+            "Demora entre jugadas: %.2f s" % segundos
+        )
 
 
 # =====================================================================
@@ -356,11 +615,16 @@ class PantallaJuego(tk.Frame):
     no hay que reconstruir nada ni invertir la jugada.
     """
 
-    def __init__(self, maestro, aplicacion, familia, n: int):
+    def __init__(self, maestro, aplicacion, familia, n: int,
+                 algoritmos_por_jugador: Optional[Dict[str, str]] = None,
+                 retardo_ms: Optional[int] = None):
         super().__init__(maestro, bg=config.PALETA["fondo_ventana"])
         self._aplicacion = aplicacion
         self._familia = familia
         self._n = n
+        self._algoritmos = _normalizar_algoritmos(algoritmos_por_jugador)
+        self._retardo_ms = _normalizar_retardo_ms(retardo_ms)
+        self._turno_programado: Optional[str] = None
 
         # Historial de la partida (responsabilidad de la interfaz, no
         # del motor: Minimax no necesita arrastrar el pasado).
@@ -418,6 +682,18 @@ class PantallaJuego(tk.Frame):
             bg=paleta["fondo_panel"], fg=paleta["texto_secundario"],
             font=(self._familia, 10),
         ).pack(anchor=tk.W, padx=22, pady=(0, 14))
+
+        self._etiqueta_algoritmos = tk.Label(
+            panel, text="", bg=paleta["fondo_panel"],
+            fg=paleta["texto_secundario"], font=(self._familia, 9),
+        )
+        self._etiqueta_algoritmos.pack(anchor=tk.W, padx=22, pady=(0, 10))
+
+        self._etiqueta_velocidad = tk.Label(
+            panel, text="", bg=paleta["fondo_panel"],
+            fg=paleta["texto_secundario"], font=(self._familia, 9),
+        )
+        self._etiqueta_velocidad.pack(anchor=tk.W, padx=22, pady=(0, 10))
 
         # --- tarjeta de turno ---
         tarjeta_turno = _crear_tarjeta(panel)
@@ -831,6 +1107,9 @@ class PantallaJuego(tk.Frame):
         if motor.es_terminal(self._estado):
             return
 
+        if not self._turno_es_humano():
+            return
+
         casilla = self._casilla_desde_pixel(evento.x, evento.y)
 
         # 1) Clic sobre un destino resaltado -> se juega el movimiento.
@@ -848,9 +1127,10 @@ class PantallaJuego(tk.Frame):
 
     def _al_mover_raton(self, evento) -> None:
         """Cambia el cursor cuando el raton esta sobre algo accionable."""
-        if motor.es_terminal(self._estado):
+        if motor.es_terminal(self._estado) or not self._turno_es_humano():
             self._lienzo.configure(cursor="")
             return
+
         casilla = self._casilla_desde_pixel(evento.x, evento.y)
         accionable = (
             casilla in self._destinos
@@ -895,6 +1175,7 @@ class PantallaJuego(tk.Frame):
         """
         if len(self._estados) <= 1:
             return
+        self._cancelar_turno_programado()
         self._estados.pop()
         if self._jugadas:
             self._jugadas.pop()
@@ -903,6 +1184,7 @@ class PantallaJuego(tk.Frame):
         self._refrescar()
 
     def _reiniciar(self) -> None:
+        self._cancelar_turno_programado()
         self._estados = self._estados[:1]
         self._jugadas = []
         self._seleccion = None
@@ -910,6 +1192,7 @@ class PantallaJuego(tk.Frame):
         self._refrescar()
 
     def _nuevo_tablero(self) -> None:
+        self._cancelar_turno_programado()
         self._aplicacion.mostrar_configuracion()
 
     # =================================================================
@@ -921,6 +1204,17 @@ class PantallaJuego(tk.Frame):
         estado = self._estado
         paleta = config.PALETA
         terminada = motor.es_terminal(estado)
+
+        self._etiqueta_algoritmos.configure(
+            text="A usa %s  |  B usa %s"
+            % (
+                _etiqueta_modelo(self._algoritmos[config.JUGADOR_A]),
+                _etiqueta_modelo(self._algoritmos[config.JUGADOR_B]),
+            )
+        )
+        self._etiqueta_velocidad.configure(
+            text="Velocidad: %.2f s por turno" % (self._retardo_ms / 1000.0)
+        )
 
         # Turno.
         colores_turno = config.COLORES_JUGADOR[estado.turno]
@@ -967,14 +1261,76 @@ class PantallaJuego(tk.Frame):
                 fg=paleta["texto_principal"])
         else:
             cantidad = len(motor.movimientos_legales(estado))
+            algoritmo = self._algoritmos[estado.turno]
+            if algoritmo == agentes.ALGORITMO_JUGADOR:
+                texto = (
+                    "Turno humano de %s: haz clic en una ficha para ver "
+                    "sus %d jugadas legales."
+                    % (config.NOMBRES_JUGADORES[estado.turno], cantidad)
+                )
+            else:
+                texto = (
+                    "%s evalua %d jugadas legales con %s."
+                    % (
+                        config.NOMBRES_JUGADORES[estado.turno],
+                        cantidad,
+                        _etiqueta_modelo(algoritmo),
+                    )
+                )
             self._etiqueta_mensaje.configure(
-                text="Haz clic en una ficha de %s para ver sus %d jugadas "
-                     "legales." % (config.NOMBRES_JUGADORES[estado.turno],
-                                   cantidad),
-                fg=paleta["texto_secundario"])
+                text=texto,
+                fg=paleta["texto_secundario"],
+            )
 
         self._boton_deshacer.habilitar(len(self._estados) > 1)
         self._dibujar()
+
+        if terminada:
+            self._cancelar_turno_programado()
+        elif self._turno_es_humano():
+            self._cancelar_turno_programado()
+        else:
+            self._programar_turno_automatico()
+
+    def _programar_turno_automatico(self) -> None:
+        """Programa el siguiente turno de la partida automatica."""
+        self._cancelar_turno_programado()
+        self._turno_programado = self.after(
+            self._retardo_ms,
+            self._ejecutar_turno_automatico,
+        )
+
+    def _ejecutar_turno_automatico(self) -> None:
+        """Consulta el agente activo y aplica su jugada."""
+        self._turno_programado = None
+        if motor.es_terminal(self._estado):
+            return
+
+        estado = self._estado
+        algoritmo = self._algoritmos[estado.turno]
+        if algoritmo == agentes.ALGORITMO_JUGADOR:
+            return
+        movimiento = agentes.elegir_movimiento(
+            estado,
+            algoritmo,
+            max_nodos=config.BUSQUEDA_MAX_NODOS,
+            max_profundidad=config.BUSQUEDA_MAX_PROFUNDIDAD,
+        )
+        self._jugar(movimiento)
+
+    def _turno_es_humano(self) -> bool:
+        """Indica si el jugador en turno es controlado por persona."""
+        return self._algoritmos[self._estado.turno] == agentes.ALGORITMO_JUGADOR
+
+    def _cancelar_turno_programado(self) -> None:
+        """Anula una ejecucion pendiente de turno automatico."""
+        if self._turno_programado is not None:
+            self.after_cancel(self._turno_programado)
+            self._turno_programado = None
+
+    def destroy(self):
+        self._cancelar_turno_programado()
+        super().destroy()
 
     def _dibujar_barra_progreso(self, barra: tk.Canvas, jugador: str,
                                 fuera: int, total: int) -> None:
@@ -1006,7 +1362,9 @@ class PantallaJuego(tk.Frame):
 class AplicacionDodgem(tk.Tk):
     """Ventana principal: alterna entre configuracion y partida."""
 
-    def __init__(self, n_inicial: Optional[int] = None):
+    def __init__(self, n_inicial: Optional[int] = None,
+                 algoritmos_iniciales: Optional[Dict[str, str]] = None,
+                 retardo_inicial_ms: Optional[int] = None):
         super().__init__()
         self.title("%s - %s" % (config.TITULO_VENTANA,
                                 config.SUBTITULO_VENTANA))
@@ -1016,9 +1374,16 @@ class AplicacionDodgem(tk.Tk):
 
         self._familia = _familia_tipografica(self)
         self._pantalla: Optional[tk.Frame] = None
+        self._algoritmos_iniciales = _normalizar_algoritmos(
+            algoritmos_iniciales)
+        self._retardo_inicial_ms = _normalizar_retardo_ms(retardo_inicial_ms)
 
         if n_inicial is not None and motor.validar_n(n_inicial):
-            self.iniciar_partida(n_inicial)
+            self.iniciar_partida(
+                n_inicial,
+                self._algoritmos_iniciales,
+                self._retardo_inicial_ms,
+            )
         else:
             self.mostrar_configuracion()
 
@@ -1032,12 +1397,31 @@ class AplicacionDodgem(tk.Tk):
         self._cambiar_pantalla(
             PantallaConfiguracion(self, self, self._familia))
 
-    def iniciar_partida(self, n: int) -> None:
+    def iniciar_partida(
+        self,
+        n: int,
+        algoritmos_por_jugador: Optional[Dict[str, str]] = None,
+        retardo_ms: Optional[int] = None,
+    ) -> None:
         self._cambiar_pantalla(
-            PantallaJuego(self, self, self._familia, n))
+            PantallaJuego(
+                self,
+                self,
+                self._familia,
+                n,
+                algoritmos_por_jugador,
+                retardo_ms,
+            )
+        )
 
 
-def lanzar(n_inicial: Optional[int] = None) -> None:
+def lanzar(n_inicial: Optional[int] = None,
+           algoritmos_iniciales: Optional[Dict[str, str]] = None,
+           retardo_inicial_ms: Optional[int] = None) -> None:
     """Punto de entrada de la interfaz grafica."""
-    aplicacion = AplicacionDodgem(n_inicial)
+    aplicacion = AplicacionDodgem(
+        n_inicial,
+        algoritmos_iniciales,
+        retardo_inicial_ms,
+    )
     aplicacion.mainloop()
