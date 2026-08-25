@@ -21,7 +21,7 @@ import sys
 
 import agentes
 import config
-import motor
+import dodgem_entrega1.motor as motor
 
 
 def construir_analizador() -> argparse.ArgumentParser:
@@ -101,7 +101,7 @@ def main(argumentos=None) -> int:
     # La interfaz se importa aqui, y no arriba, para que --diagnostico
     # siga funcionando en equipos donde falte el modulo tkinter.
     try:
-        import gui
+        import dodgem_entrega1.gui as gui
     except ImportError:
         print(
             "No se pudo cargar tkinter (interfaz grafica).\n"

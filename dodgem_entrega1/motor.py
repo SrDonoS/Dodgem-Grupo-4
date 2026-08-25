@@ -440,6 +440,26 @@ def aplicar(estado: Estado, movimiento: Movimiento) -> Estado:
 # =====================================================================
 # 5 y 6. CONDICIONES DE TERMINO
 # =====================================================================
+def clave_movimiento_repetido(movimiento: Movimiento, jugador: str):
+    """Identifica un movimiento realizado por un jugador."""
+    return (
+        jugador,
+        movimiento.origen,
+        movimiento.destino,
+        movimiento.tipo,
+    )
+def hay_tercera_repeticion(historial_movimientos) -> bool:
+    """Indica si un mismo jugador hizo el mismo movimiento 3 veces."""
+    conteo = {}
+
+    for jugador, movimiento in historial_movimientos:
+        clave = clave_movimiento_repetido(movimiento, jugador)
+        conteo[clave] = conteo.get(clave, 0) + 1
+
+        if conteo[clave] >= 3:
+            return True
+
+    return False
 
 
 def ganador(estado: Estado) -> Optional[str]:

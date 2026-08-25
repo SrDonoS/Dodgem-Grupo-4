@@ -630,7 +630,8 @@ class PantallaJuego(tk.Frame):
         # del motor: Minimax no necesita arrastrar el pasado).
         self._estados: List[motor.Estado] = [motor.estado_inicial(n)]
         self._jugadas: List[str] = []
-
+        self._historial_movimientos = []
+        self._resultado_final: Optional[str] = None
         # Estado de interaccion del raton.
         self._seleccion: Optional[motor.Casilla] = None
         self._destinos: Dict[motor.Casilla, motor.Movimiento] = {}
@@ -896,7 +897,7 @@ class PantallaJuego(tk.Frame):
         self._dibujar_marcadores_de_destino()
         self._dibujar_fichas()
 
-        if motor.es_terminal(self._estado):
+        if motor.es_terminal(self._estado) or self._resultado_final is not None:
             self._dibujar_cartel_final()
 
     def _dibujar_carriles(self) -> None:
@@ -1069,7 +1070,7 @@ class PantallaJuego(tk.Frame):
     def _dibujar_cartel_final(self) -> None:
         """Tarjeta central con el resultado de la partida."""
         paleta = config.PALETA
-        resultado = motor.ganador(self._estado)
+        resultado = self._resultado_final
         ancho = self._lienzo.winfo_width()
         alto = self._lienzo.winfo_height()
 
@@ -1104,7 +1105,7 @@ class PantallaJuego(tk.Frame):
 
     def _al_hacer_clic(self, evento) -> None:
         """Selecciona una ficha propia o ejecuta un destino resaltado."""
-        if motor.es_terminal(self._estado):
+        if motor.es_terminal(self._estado) or self._resultado_final is not None:
             return
 
         if not self._turno_es_humano():
@@ -1127,7 +1128,7 @@ class PantallaJuego(tk.Frame):
 
     def _al_mover_raton(self, evento) -> None:
         """Cambia el cursor cuando el raton esta sobre algo accionable."""
-        if motor.es_terminal(self._estado) or not self._turno_es_humano():
+        if motor.es_terminal(self._estado) or self._resultado_final is not None or not self._turno_es_humano():
             self._lienzo.configure(cursor="")
             return
 
@@ -1158,13 +1159,32 @@ class PantallaJuego(tk.Frame):
         nuevo_estado = motor.aplicar(estado_previo, movimiento)
 
         self._estados.append(nuevo_estado)
+        # 1. PRIMERO: condiciones normales de victoria/derrota
+        resultado = motor.ganador(nuevo_estado)
+        self._historial_movimientos.append((estado_previo.turno, movimiento))
+
+        if resultado is not None:
+            # La victoria/derrota tiene prioridad
+            self._finalizar_partida(resultado)
+            return
+        # 2. SEGUNDO: tercera repetición
+        if motor.hay_tercera_repeticion(self._historial_movimientos):
+            self._finalizar_partida(config.EMPATE)
+            return
+
+        # 3. Si no ocurrió nada, continúa normalmente
         self._jugadas.append(
             motor.describir_movimiento(movimiento, estado_previo.turno))
 
         self._seleccion = None
         self._destinos = {}
         self._refrescar()
-
+    def _finalizar_partida(self, resultado: str) -> None:
+        """Guarda el resultado final y actualiza la interfaz."""
+        self._resultado_final = resultado
+        self._seleccion = None
+        self._destinos = {}
+        self._refrescar()
     # -- botones -----------------------------------------------------
 
     def _deshacer(self) -> None:
@@ -1173,6 +1193,9 @@ class PantallaJuego(tk.Frame):
         Basta con descartar el ultimo estado: como aplicar() nunca muto
         el anterior, el estado previo sigue intacto en la pila.
         """
+        if self._historial_movimientos:
+            self._historial_movimientos.pop()
+        self._resultado_final = None
         if len(self._estados) <= 1:
             return
         self._cancelar_turno_programado()
@@ -1185,7 +1208,9 @@ class PantallaJuego(tk.Frame):
 
     def _reiniciar(self) -> None:
         self._cancelar_turno_programado()
+        self._resultado_final = None
         self._estados = self._estados[:1]
+        self._historial_movimientos = []
         self._jugadas = []
         self._seleccion = None
         self._destinos = {}
@@ -1203,7 +1228,7 @@ class PantallaJuego(tk.Frame):
         """Sincroniza todos los widgets con el estado actual."""
         estado = self._estado
         paleta = config.PALETA
-        terminada = motor.es_terminal(estado)
+        terminada = (motor.es_terminal(estado) or self._resultado_final is not None)
 
         self._etiqueta_algoritmos.configure(
             text="A usa %s  |  B usa %s"
@@ -1225,13 +1250,15 @@ class PantallaJuego(tk.Frame):
 
         if terminada:
             self._etiqueta_turno.configure(text="Partida terminada")
-            self._etiqueta_objetivo.configure(
-                text=motor.motivo_de_termino(estado) or "")
+            if self._resultado_final == config.EMPATE:
+                self._etiqueta_objetivo.configure(text="Tablas: la misma configuracion aparecio tres veces.")
+            else:
+                self._etiqueta_objetivo.configure(
+                    text=motor.motivo_de_termino(estado) or ""
+                )
         else:
-            self._etiqueta_turno.configure(
-                text="Turno de %s" % config.NOMBRES_JUGADORES[estado.turno])
-            self._etiqueta_objetivo.configure(
-                text=config.OBJETIVOS_JUGADORES[estado.turno].capitalize())
+            self._etiqueta_turno.configure(text="Turno de %s" % config.NOMBRES_JUGADORES[estado.turno])
+            self._etiqueta_objetivo.configure(text=config.OBJETIVOS_JUGADORES[estado.turno].capitalize())
 
         # Marcadores por jugador.
         total = motor.fichas_por_jugador(self._n)
