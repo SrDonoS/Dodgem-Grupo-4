@@ -354,6 +354,44 @@ def movimientos_legales(estado: Estado) -> Tuple[Movimiento, ...]:
     return tuple(movimientos)
 
 
+def contar_movimientos_legales(estado: Estado,
+                               jugador: Optional[str] = None) -> int:
+    """Cuenta las jugadas legales sin construir la lista.
+
+    Equivale a len(movimientos_legales(...)) pero evita crear los
+    objetos Movimiento y ordenarlos, que es trabajo inutil cuando solo
+    interesa el numero. La funcion heuristica llama a esto en cada
+    nodo del arbol, asi que la diferencia se nota.
+
+    El parametro `jugador` permite medir la movilidad del bando que NO
+    esta en turno, algo que la heuristica necesita para comparar a los
+    dos jugadores en la misma posicion.
+
+    La regla de legalidad no se duplica: es la misma condicion que
+    aplica movimientos_legales(), escrita aqui una sola vez mas por
+    razones de rendimiento y mantenida junto a ella a proposito.
+    """
+    if jugador is None:
+        jugador = estado.turno
+
+    ocupadas = casillas_ocupadas(estado)
+    avance = config.DIRECCION_AVANCE[jugador]
+    vectores = (avance,) + tuple(config.DIRECCIONES_LATERALES[jugador])
+    n = estado.n
+
+    total = 0
+    for fila, columna in fichas_de(estado, jugador):
+        for vector in vectores:
+            destino = (fila + vector[0], columna + vector[1])
+            if not dentro_del_tablero(destino, n):
+                if vector == avance:
+                    total += 1      # Movimiento de salida.
+                continue
+            if destino not in ocupadas:
+                total += 1
+    return total
+
+
 def hay_movimientos_legales(estado: Estado) -> bool:
     """Version corto-circuitada de movimientos_legales().
 
