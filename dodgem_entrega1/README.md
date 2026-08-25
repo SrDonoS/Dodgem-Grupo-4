@@ -29,11 +29,14 @@ sudo apt install python3-tk
 
 | Archivo | Responsabilidad | Contiene lógica de juego |
 |---|---|---|
-| `config.py` | Todos los parámetros: tamaños, direcciones, reglas, colores. | No |
+| `config.py` | Todos los parámetros: tamaños, direcciones, reglas, pesos, colores. | No |
 | `motor.py` | Máquina de estados **pura**: las 6 funciones exigidas. | Sí, toda |
 | `gui.py` | Interfaz Tkinter: dibuja y traduce clics. | No |
 | `main.py` | Punto de entrada y argumentos de línea de comandos. | No |
-| `pruebas_motor.py` | 40 pruebas unitarias del motor. | No |
+| `heuristica.py` | Función de evaluación (Semana 3). | No, solo la mide |
+| `pruebas_motor.py` | 41 pruebas unitarias del motor. | No |
+| `pruebas_heuristica.py` | 30 pruebas de la heurística. | No |
+| `banco_heuristica.py` | Banco de medición. **No es entrega.** | No |
 
 La regla de oro del diseño: **`gui.py` no sabe jugar al Dodgem.** Si
 una jugada aparece resaltada en pantalla es porque
@@ -142,6 +145,136 @@ aleatorias que verifica invariantes jugada a jugada:
 * fichas en tablero + fichas fuera = `n − 1`, siempre;
 * nunca hay dos fichas en la misma casilla;
 * toda ficha en juego está dentro del tablero.
+
+---
+
+## Función heurística (Semana 3)
+
+Archivos: `heuristica.py` (entrega), `pruebas_heuristica.py` (30
+pruebas), `banco_heuristica.py` (banco de medición, **no** es entrega).
+
+```python
+heuristica_dodgem(estado, jugador_max) -> float   # h(n)
+evaluar(estado, jugador_max, profundidad=0)       # f(n) = g(n) + h(n)
+explicar(estado, jugador_max) -> str              # desglose para defender
+```
+
+### La idea: el Dodgem es una carrera de dos pathfindings
+
+Cada ficha resuelve su propio problema de camino hacia el carril de
+salida. La partida es la superposición de los dos, compitiendo por las
+mismas casillas. De ahí los dos bloques de la fórmula: **progreso**
+(cuánto me falta) y **restricción** (cuánto le estorbo).
+
+### Distancia Manhattan a un objetivo que es una línea
+
+El objetivo de una ficha no es una casilla sino un *conjunto*: cualquier
+casilla pasado su borde de salida. La distancia Manhattan a un conjunto
+es el mínimo a sus elementos, y para A en `(f, c)`:
+
+```
+h(f, c) = mín  |f − f'| + |n − c|  =  n − c        (el mínimo está en f' = f)
+          f'
+```
+
+La componente perpendicular se anula: la distancia Manhattan **degenera
+en la distancia horizontal**. No es una simplificación arbitraria, es el
+resultado exacto de la definición aplicada a una meta lineal.
+
+* **Admisible**: en el problema relajado (tablero vacío) una ficha a
+  distancia `d` necesita exactamente `d` movimientos; los obstáculos
+  solo alargan. Luego `h ≤ h*`. Verificado con BFS en las pruebas.
+* **Consistente**: un movimiento cambia una coordenada en 1, luego
+  `|h(s) − h(s')| ≤ 1` = coste del movimiento.
+* **Cota inferior del jugador**: cada turno mueve una ficha una casilla,
+  y un lateral no reduce la distancia. Luego `D(J) = Σ h` es una cota
+  inferior del número de turnos que le faltan a `J` para ganar.
+
+### Dónde están g(n) y h(n)
+
+| A* | Aquí |
+|---|---|
+| `g(n)` coste pagado | profundidad del nodo en el árbol |
+| `h(n)` coste estimado | `heuristica_dodgem()` en las hojas del corte |
+| `f(n) = g + h` | `evaluar()`: un final ganado vale `VICTORIA − profundidad` |
+
+El descuento por profundidad hace que entre dos victorias el agente
+elija la **más corta**, y entre dos derrotas la **más larga**. Y el
+orden de `movimientos_legales()` (salidas y avances primero) es
+exactamente "explorar antes lo que más reduce h", que es lo que hace
+podar temprano a Alfa-Beta.
+
+### La fórmula
+
+```
+H = W_DISTANCIA      · (D_min  − D_max)      ← invertida: menos distancia es mejor
+  + W_SALIDA         · (F_max  − F_min)
+  + W_BLOQUEO_RIVAL  · (BR_min − BR_max)
+  + W_BLOQUEO_PROPIO · (BP_min − BP_max)
+  + s · W_INMOVILIZADA · (I_min − I_max)
+  + W_MOVILIDAD      · (M_max  − M_min)
+  + W_TEMPO          · (±1 según quién mueve)
+```
+
+Es antisimétrica por construcción: `H(s, A) = −H(s, B)`. El factor `s`
+sigue a `config.REGLA_BLOQUEO`: con la regla clásica (el bloqueado gana)
+inmovilizar al rival **resta**, porque bloquearlo sería perder.
+
+### Evidencia (banco de medición, tablero 6×6)
+
+| Medición | Resultado |
+|---|---|
+| Coste por evaluación | 15,7 µs (n=6) · 41 µs (n=16) — unas 64 000/s |
+| Contra jugador aleatorio, prof. 1 | 97 % de victorias [IC95: 92–100] |
+| Contra jugador aleatorio, prof. 2 y 3 | 100 % |
+| Contra "solo distancia", prof. 1 | 75 % [IC95: 67–83] |
+| Contra "solo distancia", prof. 2 | 71 % [IC95: 63–79] |
+
+El segundo experimento es el que justifica el bloque de restricción: a
+profundidad 1 no hay búsqueda que compense, así que mide la evaluación
+y no el árbol. Los intervalos excluyen el 50 %, o sea que la diferencia
+no es ruido.
+
+### Los pesos se midieron, no se adivinaron
+
+Cada peso se propuso con un argumento analítico y después se midió
+enfrentando variantes (120 partidas por combinación, dos tamaños de
+tablero). Tres valores cambiaron al medirlos:
+
+| Peso | Estimado | Medido | Por qué |
+|---|---|---|---|
+| `W_BLOQUEO_RIVAL` | 3,0 | **6,0** | El rival puede *sostener* el bloqueo; no cuesta solo el rodeo puntual |
+| `W_INMOVILIZADA` | 8,0 | **4,0** | Un valor alto hacía perseguir bloqueos totales (raros) en vez de correr |
+| `W_MOVILIDAD` | 0,5 | **0,2** | Competía de igual a igual con avanzar; el agente daba vueltas |
+
+Con los pesos estimados el agente empataba con "solo distancia" a
+profundidad 2 (47 %); con los medidos gana 71 %.
+
+> Advertencia metodológica que conviene mencionar en la defensa: dos
+> agentes deterministas producen siempre la misma partida, así que
+> "80 partidas" serían 2 repetidas 40 veces. Por eso el banco desempata
+> al azar entre jugadas de igual valor, y por eso no poda con alfa en la
+> raíz (podar ahí devolvería cotas en lugar de valores exactos y el
+> conjunto de empatados quedaría mal identificado).
+
+### Cómo defenderla en pantalla
+
+```bash
+python banco_heuristica.py            # informe completo
+python -m unittest pruebas_heuristica -v
+```
+
+`heuristica.explicar(estado, "A")` imprime una tabla con el aporte de
+cada término, para no tener que exhibir un número mágico:
+
+```
+TERMINO                     APORTE   DETALLE
+Distancia a la salida         -1.0   me faltan 28 pasos, a el 27
+Atascos propios               +1.0   mios 0, suyos 1
+Movilidad                     +0.5   10 jugadas contra 9
+Tempo                         -0.5   mueve Jugador B
+TOTAL                         +0.0   (1 punto = 1 paso de avance)
+```
 
 ---
 

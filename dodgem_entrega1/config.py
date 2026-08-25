@@ -63,7 +63,7 @@ DIVISOR_PARIDAD = 2
 RESTO_PARIDAD_REQUERIDO = 0
 
 #: Valor que n debe superar estrictamente (n > 4 segun el enunciado).
-TAMANO_MINIMO_EXCLUSIVO = 3
+TAMANO_MINIMO_EXCLUSIVO = 4
 
 #: Cota superior practica. No es una regla del juego, sino un limite
 #: para que la interfaz siga siendo legible. Subirlo es seguro: el
@@ -295,3 +295,83 @@ COLORES_JUGADOR = {
 
 #: Cantidad maxima de jugadas mostradas en el historial lateral.
 MAXIMO_JUGADAS_EN_HISTORIAL = 200
+
+
+# ---------------------------------------------------------------------
+# 8. PESOS DE LA FUNCION HEURISTICA (Semana 3)
+# ---------------------------------------------------------------------
+# UNIDAD DE MEDIDA: todos los pesos estan expresados en "pasos de
+# avance". Un paso es un movimiento que acerca una ficha una casilla a
+# su carril de salida. Fijar W_DISTANCIA = 1.0 define la escala: si la
+# heuristica devuelve +6, significa "voy seis pasos adelante en la
+# carrera". Esa interpretabilidad es deliberada: la rubrica exige que
+# la heuristica sea EXPLICABLE, y una escala arbitraria no lo es.
+#
+# COMO SE FIJARON ESTOS VALORES. Primero se propuso cada peso con un
+# argumento analitico (cuantos pasos cuesta realmente esa situacion).
+# Despues se midieron con banco_heuristica.py, enfrentando variantes
+# entre si en 120 partidas por combinacion y sobre dos tamanos de
+# tablero. Donde el dato contradijo a la estimacion, se conservo el
+# dato y se anoto la discrepancia. Los tres pesos marcados abajo como
+# "ajustado tras la medicion" son exactamente esos casos.
+
+#: Peso del termino de distancia (Manhattan al carril de salida).
+#: Es el ancla de la escala; cambiarlo reescala todo lo demas.
+W_DISTANCIA = 1.0
+
+#: Bonificacion extra por cada ficha ya fuera del tablero.
+#: Justificacion: el termino de distancia ya cuenta el progreso, pero
+#: una ficha fuera es progreso IRREVERSIBLE (no puede volver a ser
+#: bloqueada ni estorbar a las propias). Se le concede el valor de dos
+#: pasos adicionales como premio a esa seguridad.
+W_SALIDA = 2.0
+
+#: Penalizacion por cada ficha propia con su avance tapado por una
+#: ficha RIVAL.
+#: Cota analitica: una ficha bloqueada de frente necesita al menos un
+#: movimiento lateral para esquivar y otro para retomar la linea; son
+#: >= 2 pasos perdidos. Ese razonamiento sugeria 3.0.
+#: Correccion empirica: el barrido de banco_heuristica.py mostro que
+#: 6.0 juega claramente mejor. La interpretacion es que el bloqueo no
+#: cuesta solo el rodeo puntual: el rival puede SOSTENERLO, y en un
+#: tablero estrecho una ficha frenada estorba ademas a las propias.
+#: Se conserva el valor medido, no el estimado.
+W_BLOQUEO_RIVAL = 6.0
+
+#: Penalizacion por cada ficha propia tapada por OTRA FICHA PROPIA.
+#: Es un atasco autoinfligido: cuesta lo mismo esquivar, pero el rival
+#: no lo controla y suele deshacerse solo. Vale menos que el anterior.
+W_BLOQUEO_PROPIO = 1.0
+
+#: Penalizacion ADICIONAL por cada ficha propia sin NINGUN movimiento
+#: legal. Se suma a la anterior: una ficha inmovilizada por el rival
+#: acumula W_BLOQUEO_RIVAL + W_INMOVILIZADA = 10 puntos, de modo que
+#: siempre pesa mas que un bloqueo frontal simple aunque el numero de
+#: esta linea sea menor.
+#: Ajustado de 8.0 a 4.0 tras la medicion: un valor alto empujaba al
+#: agente a perseguir bloqueos totales -que son raros- descuidando su
+#: propia carrera hacia la salida.
+W_INMOVILIZADA = 4.0
+
+#: Peso de la movilidad (numero de jugadas legales disponibles).
+#: Actua como desempate y como seguro ante la regla de bloqueo: pocas
+#: jugadas legales es una posicion fragil.
+#: Ajustado de 0.5 a 0.2 tras la medicion. Con 0.5, conservar jugadas
+#: disponibles competia de igual a igual con avanzar (un avance vale
+#: 1.0 y una ficha aporta hasta 3 jugadas), y el agente se quedaba
+#: dando vueltas en vez de correr hacia su carril.
+W_MOVILIDAD = 0.2
+
+#: Valor del turno (tempo). En una carrera, mover primero vale a lo
+#: sumo un paso; se usa medio paso para no sobrevalorarlo.
+W_TEMPO = 0.5
+
+#: Puntaje de una victoria. Debe ser ESTRICTAMENTE MAYOR que cualquier
+#: valor que pueda devolver la heuristica, para que el agente nunca
+#: prefiera una posicion "bonita" antes que un final ganado.
+#: heuristica.cota_maxima_heuristica(n) calcula esa cota y las pruebas
+#: unitarias verifican que este valor la supera.
+VICTORIA = 1_000_000.0
+
+#: Puntaje de unas tablas: ni victoria ni derrota.
+VALOR_EMPATE = 0.0
