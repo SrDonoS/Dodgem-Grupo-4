@@ -422,7 +422,8 @@ def hay_movimientos_legales(estado: Estado) -> bool:
 # =====================================================================
 
 
-def aplicar(estado: Estado, movimiento: Movimiento) -> Estado:
+def aplicar(estado: Estado, movimiento: Movimiento,
+            validar: Optional[bool] = None) -> Estado:
     """Devuelve un estado NUEVO con la jugada aplicada.
 
     El estado recibido no se modifica en absoluto: se construyen
@@ -437,11 +438,26 @@ def aplicar(estado: Estado, movimiento: Movimiento) -> Estado:
         * El turno pasa al rival (no se permite pasar el turno).
         * Se actualiza el contador de jugadas sin progreso.
 
+    Argumentos:
+        validar: si es None se usa el valor de
+                 config.VALIDAR_MOVIMIENTOS_AL_APLICAR. El buscador
+                 Minimax pasa False de forma explicita: solo aplica
+                 movimientos que el mismo obtuvo de
+                 movimientos_legales(), asi que revalidarlos volveria
+                 a generar y ordenar la lista completa en CADA nodo
+                 del arbol, que es el mayor coste evitable de toda la
+                 busqueda. Se pasa como argumento en vez de tocar la
+                 constante global para no crear una condicion de
+                 carrera: el agente busca en un hilo aparte mientras
+                 la interfaz sigue usando el motor.
+
     Lanza:
         ValueError: si el movimiento no es legal y la validacion esta
-                    activada en config.VALIDAR_MOVIMIENTOS_AL_APLICAR.
+                    activada.
     """
-    if config.VALIDAR_MOVIMIENTOS_AL_APLICAR:
+    if validar is None:
+        validar = config.VALIDAR_MOVIMIENTOS_AL_APLICAR
+    if validar:
         if movimiento not in movimientos_legales(estado):
             raise ValueError(
                 "Movimiento ilegal para el estado actual: %r" % (movimiento,)

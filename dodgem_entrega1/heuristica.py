@@ -428,8 +428,13 @@ def cota_maxima_heuristica(n: int) -> float:
     )
 
 
+#: Centinela para distinguir "no me pasaron el resultado" de "el
+#: resultado es None", que significa partida en curso.
+SIN_CALCULAR = object()
+
+
 def evaluar(estado: motor.Estado, jugador_max: str,
-            profundidad: int = 0) -> float:
+            profundidad: int = 0, resultado=SIN_CALCULAR) -> float:
     """Valor de un nodo del arbol: f(n) = g(n) + h(n).
 
     Es la funcion que llamara Minimax. Distingue dos situaciones:
@@ -455,8 +460,15 @@ def evaluar(estado: motor.Estado, jugador_max: str,
                      SIEMPRE el mismo en toda la busqueda (el agente),
                      no el jugador que mueve en este nodo.
         profundidad: numero de jugadas desde la raiz, es decir g(n).
+        resultado:   salida de motor.ganador(estado), si el llamador
+                     ya la calculo. El buscador necesita conocer el
+                     ganador ANTES de decidir si el nodo es hoja, y
+                     volver a calcularlo aqui duplicaria el trabajo en
+                     todas las hojas del arbol. Si no se pasa, se
+                     calcula igual que siempre.
     """
-    resultado = motor.ganador(estado)
+    if resultado is SIN_CALCULAR:
+        resultado = motor.ganador(estado)
 
     if resultado is None:
         return heuristica_dodgem(estado, jugador_max)

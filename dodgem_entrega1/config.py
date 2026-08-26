@@ -375,3 +375,94 @@ VICTORIA = 1_000_000.0
 
 #: Puntaje de unas tablas: ni victoria ni derrota.
 VALOR_EMPATE = 0.0
+
+#: Umbral a partir del cual un puntaje se considera "victoria segura"
+#: y no una estimacion. La tabla de transposiciones lo necesita para
+#: reconocer los puntajes que dependen de la distancia al final y
+#: reajustarlos (ver agente.py). Se deja un margen amplio por debajo
+#: de VICTORIA para absorber el descuento por profundidad.
+UMBRAL_VICTORIA = VICTORIA / 2.0
+
+
+# ---------------------------------------------------------------------
+# 9. AGENTE MINIMAX (Fase 2)
+# ---------------------------------------------------------------------
+
+#: Modos de juego disponibles.
+MODO_HUMANO_VS_HUMANO = "humano_vs_humano"
+MODO_HUMANO_VS_AGENTE = "humano_vs_agente"
+MODO_AGENTE_VS_HUMANO = "agente_vs_humano"
+MODO_AGENTE_VS_AGENTE = "agente_vs_agente"
+
+#: Que jugador controla cada modo. La interfaz consulta este mapa para
+#: saber a quien pedirle la jugada; no lo decide por su cuenta.
+CONTROLADOR_POR_MODO = {
+    MODO_HUMANO_VS_HUMANO: {JUGADOR_A: "humano", JUGADOR_B: "humano"},
+    MODO_HUMANO_VS_AGENTE: {JUGADOR_A: "humano", JUGADOR_B: "agente"},
+    MODO_AGENTE_VS_HUMANO: {JUGADOR_A: "agente", JUGADOR_B: "humano"},
+    MODO_AGENTE_VS_AGENTE: {JUGADOR_A: "agente", JUGADOR_B: "agente"},
+}
+
+#: Nombre legible de cada modo para la pantalla de configuracion.
+NOMBRES_MODOS = {
+    MODO_HUMANO_VS_HUMANO: "Humano vs Humano",
+    MODO_HUMANO_VS_AGENTE: "Humano (A) vs Bot (B)",
+    MODO_AGENTE_VS_HUMANO: "Bot (A) vs Humano (B)",
+    MODO_AGENTE_VS_AGENTE: "Bot vs Bot (demostracion)",
+}
+
+MODO_POR_DEFECTO = MODO_HUMANO_VS_AGENTE
+
+#: Niveles de dificultad.
+#: La PROFUNDIDAD es el control principal y es determinista: en el
+#: mismo tablero el agente juega siempre igual, cosa que importa para
+#: poder reproducir una partida durante la interrogacion.
+#: El TOPE DE SEGUNDOS es solo una red de seguridad para tableros
+#: grandes: si se agota, la profundizacion iterativa se queda con el
+#: mejor resultado de la ultima profundidad COMPLETA (nunca con una a
+#: medias, que podria estar sesgada por el orden de exploracion).
+NIVELES = {
+    "facil": {"profundidad": 2, "segundos": 2.0,
+              "descripcion": "Ve tu jugada y su respuesta."},
+    "medio": {"profundidad": 4, "segundos": 4.0,
+              "descripcion": "Dos jugadas completas por bando."},
+    "dificil": {"profundidad": 6, "segundos": 8.0,
+                "descripcion": "Tres jugadas por bando. Planifica."},
+    "experto": {"profundidad": 8, "segundos": 15.0,
+                "descripcion": "Cuatro jugadas por bando. Lento."},
+}
+
+#: Orden en que se muestran los niveles en la interfaz.
+ORDEN_NIVELES = ("facil", "medio", "dificil", "experto")
+
+NIVEL_POR_DEFECTO = "medio"
+
+#: Tamano maximo de la tabla de transposiciones (numero de entradas).
+#: Al superarlo se vacia por completo: es la politica de reemplazo mas
+#: simple y basta aqui, porque la tabla se reinicia en cada jugada.
+MAXIMO_ENTRADAS_TRANSPOSICION = 400_000
+
+#: Si es True, la tabla de transposiciones se conserva entre jugadas
+#: consecutivas. Acelera, pero consume memoria; se limpia al empezar
+#: una partida nueva.
+REUSAR_TABLA_ENTRE_JUGADAS = True
+
+#: Pausa minima (en milisegundos) antes de que el agente mueva. Sin
+#: ella, en niveles bajos el bot responde de forma instantanea y la
+#: partida se vuelve confusa de seguir.
+PAUSA_MINIMA_AGENTE_MS = 350
+
+#: Cada cuantos milisegundos la interfaz consulta si el agente ya
+#: termino de pensar. Es un sondeo barato sobre una cola.
+INTERVALO_SONDEO_AGENTE_MS = 50
+
+#: Cada cuantos nodos la busqueda comprueba el reloj y la senal de
+#: cancelacion. Consultar el reloj en cada nodo seria costoso.
+NODOS_ENTRE_COMPROBACIONES = 2048
+
+#: Colores de los elementos propios del agente en la interfaz.
+PALETA.update({
+    "resalte_jugada_bot": "#F6DDA8",
+    "resalte_jugada_bot_borde": "#E2BE72",
+    "pensando": "#C9B7E4",
+})

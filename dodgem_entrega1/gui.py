@@ -19,10 +19,13 @@ el proyecto no depende de ningun paquete externo.
 from __future__ import annotations
 
 import math
+import queue
+import threading
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Dict, List, Optional, Tuple
 
+import agente
 import config
 import motor
 
@@ -171,7 +174,11 @@ class PantallaConfiguracion(tk.Frame):
         self._aplicacion = aplicacion
         self._familia = familia
         self._n_elegido = config.TAMANO_POR_DEFECTO
+        self._modo_elegido = config.MODO_POR_DEFECTO
+        self._nivel_elegido = config.NIVEL_POR_DEFECTO
         self._chips: Dict[int, BotonPastel] = {}
+        self._chips_modo: Dict[str, BotonPastel] = {}
+        self._chips_nivel: Dict[str, BotonPastel] = {}
 
         self._construir()
 
@@ -185,22 +192,88 @@ class PantallaConfiguracion(tk.Frame):
         tk.Label(
             centro, text=config.TITULO_VENTANA.upper(),
             bg=paleta["fondo_ventana"], fg=paleta["texto_principal"],
-            font=(self._familia, 42, "bold"),
+            font=(self._familia, 40, "bold"),
         ).pack()
 
         tk.Label(
             centro, text=config.SUBTITULO_VENTANA,
             bg=paleta["fondo_ventana"], fg=paleta["texto_secundario"],
             font=(self._familia, 11),
-        ).pack(pady=(2, 26))
+        ).pack(pady=(2, 22))
 
-        self._construir_tarjeta_tamano(centro)
-        self._construir_tarjeta_reglas(centro)
+        # Dos columnas: los ajustes a la izquierda y el recordatorio de
+        # reglas a la derecha. Apilarlo todo en vertical desbordaria la
+        # ventana en pantallas de portatil.
+        columnas = tk.Frame(centro, bg=paleta["fondo_ventana"])
+        columnas.pack()
+
+        izquierda = tk.Frame(columnas, bg=paleta["fondo_ventana"])
+        izquierda.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 14))
+        derecha = tk.Frame(columnas, bg=paleta["fondo_ventana"])
+        derecha.pack(side=tk.LEFT, anchor=tk.N)
+
+        self._construir_tarjeta_tamano(izquierda)
+        self._construir_tarjeta_oponente(izquierda)
+        self._construir_tarjeta_reglas(derecha)
 
         BotonPastel(
             centro, "Comenzar partida", self._comenzar, self._familia,
             variante="primario", tamano_fuente=13,
-        ).pack(pady=(22, 0), ipadx=10)
+        ).pack(pady=(20, 0), ipadx=10)
+
+    def _construir_tarjeta_oponente(self, maestro: tk.Misc) -> None:
+        """Eleccion del modo de juego y del nivel del agente.
+
+        Los modos y los niveles se leen de config.py, de modo que
+        anadir un nivel nuevo (o cambiar su profundidad) durante la
+        interrogacion no requiere tocar la interfaz.
+        """
+        paleta = config.PALETA
+        tarjeta = _crear_tarjeta(maestro)
+        tarjeta.pack(fill=tk.X)
+
+        tk.Label(
+            tarjeta, text="Oponente",
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_principal"],
+            font=(self._familia, 12, "bold"),
+        ).pack(anchor=tk.W, padx=22, pady=(16, 6))
+
+        for modo in (config.MODO_HUMANO_VS_HUMANO,
+                     config.MODO_HUMANO_VS_AGENTE,
+                     config.MODO_AGENTE_VS_HUMANO,
+                     config.MODO_AGENTE_VS_AGENTE):
+            chip = BotonPastel(
+                tarjeta, config.NOMBRES_MODOS[modo],
+                lambda valor=modo: self._elegir_modo(valor), self._familia,
+                variante="chip", tamano_fuente=10)
+            chip.pack(fill=tk.X, padx=22, pady=2)
+            self._chips_modo[modo] = chip
+
+        self._etiqueta_nivel = tk.Label(
+            tarjeta, text="Nivel del bot",
+            bg=paleta["fondo_tarjeta"], fg=paleta["texto_principal"],
+            font=(self._familia, 12, "bold"))
+        self._etiqueta_nivel.pack(anchor=tk.W, padx=22, pady=(14, 6))
+
+        self._fila_niveles = tk.Frame(tarjeta, bg=paleta["fondo_tarjeta"])
+        self._fila_niveles.pack(anchor=tk.W, padx=22)
+
+        for nivel in config.ORDEN_NIVELES:
+            chip = BotonPastel(
+                self._fila_niveles, nivel.capitalize(),
+                lambda valor=nivel: self._elegir_nivel(valor),
+                self._familia, variante="chip", tamano_fuente=10)
+            chip.pack(side=tk.LEFT, padx=(0, 4))
+            self._chips_nivel[nivel] = chip
+
+        self._descripcion_nivel = tk.Label(
+            tarjeta, text="", bg=paleta["fondo_tarjeta"],
+            fg=paleta["texto_secundario"], font=(self._familia, 9),
+            justify=tk.LEFT, wraplength=300)
+        self._descripcion_nivel.pack(anchor=tk.W, padx=22, pady=(8, 16))
+
+        self._elegir_modo(self._modo_elegido)
+        self._elegir_nivel(self._nivel_elegido)
 
     def _construir_tarjeta_tamano(self, maestro: tk.Misc) -> None:
         paleta = config.PALETA
@@ -339,8 +412,39 @@ class PantallaConfiguracion(tk.Frame):
             text="Tablero de %d x %d listo." % (valor, valor),
             fg=config.PALETA["aviso_ok"])
 
+    def _elegir_modo(self, modo: str) -> None:
+        """Fija el modo y muestra u oculta la eleccion de nivel."""
+        self._modo_elegido = modo
+        for valor, chip in self._chips_modo.items():
+            chip.marcar(valor == modo)
+
+        # El nivel solo tiene sentido si juega al menos un bot.
+        hay_agente = "agente" in config.CONTROLADOR_POR_MODO[modo].values()
+        for chip in self._chips_nivel.values():
+            chip.habilitar(hay_agente)
+        color = (config.PALETA["texto_principal"] if hay_agente
+                 else config.PALETA["texto_secundario"])
+        self._etiqueta_nivel.configure(fg=color)
+        if not hay_agente:
+            self._descripcion_nivel.configure(
+                text="Sin bot: los dos jugadores son humanos.")
+        else:
+            self._elegir_nivel(self._nivel_elegido)
+
+    def _elegir_nivel(self, nivel: str) -> None:
+        """Fija el nivel y explica que implica en jugadas de anticipacion."""
+        self._nivel_elegido = nivel
+        for valor, chip in self._chips_nivel.items():
+            chip.marcar(valor == nivel)
+        ajustes = config.NIVELES[nivel]
+        self._descripcion_nivel.configure(
+            text="Profundidad %d  (%s)  ·  tope de %.0f s"
+                 % (ajustes["profundidad"], ajustes["descripcion"],
+                    ajustes["segundos"]))
+
     def _comenzar(self) -> None:
-        self._aplicacion.iniciar_partida(self._n_elegido)
+        self._aplicacion.iniciar_partida(
+            self._n_elegido, self._modo_elegido, self._nivel_elegido)
 
 
 # =====================================================================
@@ -356,11 +460,26 @@ class PantallaJuego(tk.Frame):
     no hay que reconstruir nada ni invertir la jugada.
     """
 
-    def __init__(self, maestro, aplicacion, familia, n: int):
+    def __init__(self, maestro, aplicacion, familia, n: int,
+                 modo: str = config.MODO_HUMANO_VS_HUMANO,
+                 nivel: str = config.NIVEL_POR_DEFECTO):
         super().__init__(maestro, bg=config.PALETA["fondo_ventana"])
         self._aplicacion = aplicacion
         self._familia = familia
         self._n = n
+        self._modo = modo
+        self._nivel = nivel
+        self._controlador = config.CONTROLADOR_POR_MODO[modo]
+
+        # Un agente por jugador controlado por la maquina. Cada uno
+        # conserva SU tabla de transposiciones durante toda la partida:
+        # las posiciones ya analizadas siguen siendo validas jugada a
+        # jugada, asi que reaprovecharlas es puro beneficio.
+        self._agentes: Dict[str, agente.AgenteMinimax] = {
+            jugador: agente.AgenteMinimax(jugador, nivel)
+            for jugador, quien in self._controlador.items()
+            if quien == "agente"
+        }
 
         # Historial de la partida (responsabilidad de la interfaz, no
         # del motor: Minimax no necesita arrastrar el pasado).
@@ -370,6 +489,24 @@ class PantallaJuego(tk.Frame):
         # Estado de interaccion del raton.
         self._seleccion: Optional[motor.Casilla] = None
         self._destinos: Dict[motor.Casilla, motor.Movimiento] = {}
+
+        # --- coordinacion con el hilo del agente ---------------------
+        # La busqueda NO puede correr en el hilo de Tkinter: mientras
+        # calcula, la ventana dejaria de repintarse y de responder al
+        # raton, y el sistema la marcaria como "no responde". Se lanza
+        # en un hilo aparte que deja el resultado en una cola, y el
+        # hilo de la interfaz la consulta periodicamente con after().
+        # Regla de oro: SOLO el hilo de Tkinter toca widgets.
+        self._cola_agente: "queue.Queue" = queue.Queue()
+        self._cancelar_agente: Optional[threading.Event] = None
+        self._pensando = False
+        self._fase_animacion = 0
+        # Identifica la partida en curso. Si el usuario reinicia
+        # mientras el bot piensa, el resultado que llegue tarde traera
+        # una generacion antigua y se descarta.
+        self._generacion = 0
+        self._ultimo_resultado_agente: Optional[agente.Resultado] = None
+        self._ultima_jugada_agente: Optional[motor.Movimiento] = None
 
         # Geometria del lienzo, recalculada en cada redibujo.
         self._lado = 0.0
@@ -454,6 +591,11 @@ class PantallaJuego(tk.Frame):
             self._marcadores[jugador] = self._construir_marcador(
                 panel, jugador)
 
+        # --- tarjeta del agente (solo si hay bot en la partida) ---
+        self._tarjeta_agente = None
+        if self._agentes:
+            self._construir_tarjeta_agente(panel)
+
         # --- historial ---
         tk.Label(
             panel, text="Historial", bg=paleta["fondo_panel"],
@@ -506,6 +648,25 @@ class PantallaJuego(tk.Frame):
         BotonPastel(botonera, "Nuevo tablero", self._nuevo_tablero,
                     self._familia, tamano_fuente=10).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+
+    def _construir_tarjeta_agente(self, panel: tk.Frame) -> None:
+        """Tarjeta con el pensamiento del bot y sus estadisticas."""
+        paleta = config.PALETA
+        tarjeta = _crear_tarjeta(panel)
+        tarjeta.pack(fill=tk.X, padx=18, pady=(4, 8))
+        self._tarjeta_agente = tarjeta
+
+        self._titulo_agente = tk.Label(
+            tarjeta, text="", bg=paleta["fondo_tarjeta"],
+            fg=paleta["texto_principal"], font=(self._familia, 11, "bold"),
+            justify=tk.LEFT)
+        self._titulo_agente.pack(anchor=tk.W, padx=16, pady=(12, 2))
+
+        self._detalle_agente = tk.Label(
+            tarjeta, text="", bg=paleta["fondo_tarjeta"],
+            fg=paleta["texto_secundario"], font=(self._familia, 9),
+            justify=tk.LEFT, wraplength=config.ANCHO_PANEL_LATERAL - 70)
+        self._detalle_agente.pack(anchor=tk.W, padx=16, pady=(0, 12))
 
     def _construir_marcador(self, panel: tk.Frame,
                             jugador: str) -> Dict[str, tk.Widget]:
@@ -617,6 +778,7 @@ class PantallaJuego(tk.Frame):
         self._dibujar_carriles()
         self._dibujar_celdas()
         self._dibujar_rotulos()
+        self._dibujar_ultima_jugada_del_bot()
         self._dibujar_marcadores_de_destino()
         self._dibujar_fichas()
 
@@ -723,6 +885,28 @@ class PantallaJuego(tk.Frame):
                 text=str(columna + 1), fill=paleta["texto_secundario"],
                 font=fuente)
 
+    def _dibujar_ultima_jugada_del_bot(self) -> None:
+        """Marca de donde a donde movio el bot en su ultimo turno.
+
+        Sin esta pista, contra un bot rapido cuesta darse cuenta de que
+        ficha se movio: el tablero simplemente aparece distinto.
+        """
+        movimiento = self._ultima_jugada_agente
+        if movimiento is None:
+            return
+        paleta = config.PALETA
+        lado = self._lado
+        separacion = lado * config.FRACCION_SEPARACION_CELDA
+        radio = lado * config.FRACCION_RADIO_CELDA
+
+        for casilla in (movimiento.origen, movimiento.destino):
+            x, y = self._esquina(casilla[0], casilla[1])
+            _rectangulo_redondeado(
+                self._lienzo, x + separacion, y + separacion,
+                x + lado - separacion, y + lado - separacion,
+                radio, fill=paleta["resalte_jugada_bot"],
+                outline=paleta["resalte_jugada_bot_borde"], width=2)
+
     def _dibujar_marcadores_de_destino(self) -> None:
         """Resalta las casillas legales de la ficha seleccionada."""
         if self._seleccion is None:
@@ -826,9 +1010,18 @@ class PantallaJuego(tk.Frame):
     # INTERACCION
     # =================================================================
 
+    def _turno_es_humano(self) -> bool:
+        """Indica si la jugada actual le corresponde a una persona."""
+        return self._controlador[self._estado.turno] == "humano"
+
     def _al_hacer_clic(self, evento) -> None:
         """Selecciona una ficha propia o ejecuta un destino resaltado."""
         if motor.es_terminal(self._estado):
+            return
+        # Mientras piensa el bot el tablero queda en solo lectura: dejar
+        # mover al humano en el turno del rival corromperia la partida
+        # que el agente esta analizando en el otro hilo.
+        if not self._turno_es_humano():
             return
 
         casilla = self._casilla_desde_pixel(evento.x, evento.y)
@@ -848,7 +1041,7 @@ class PantallaJuego(tk.Frame):
 
     def _al_mover_raton(self, evento) -> None:
         """Cambia el cursor cuando el raton esta sobre algo accionable."""
-        if motor.es_terminal(self._estado):
+        if motor.es_terminal(self._estado) or not self._turno_es_humano():
             self._lienzo.configure(cursor="")
             return
         casilla = self._casilla_desde_pixel(evento.x, evento.y)
@@ -885,31 +1078,150 @@ class PantallaJuego(tk.Frame):
         self._destinos = {}
         self._refrescar()
 
+    # =================================================================
+    # TURNO DEL AGENTE (en un hilo aparte)
+    # =================================================================
+
+    def _lanzar_turno_del_agente(self) -> None:
+        """Pone a pensar al agente si le toca mover.
+
+        Se llama al final de cada refresco. Comprueba tres cosas antes
+        de arrancar: que la partida siga viva, que el turno sea de un
+        jugador controlado por la maquina, y que no haya ya una
+        busqueda en marcha.
+        """
+        if self._pensando or motor.es_terminal(self._estado):
+            return
+        cerebro = self._agentes.get(self._estado.turno)
+        if cerebro is None:
+            return
+
+        self._pensando = True
+        self._fase_animacion = 0
+        self._cancelar_agente = threading.Event()
+
+        hilo = threading.Thread(
+            target=self._pensar_en_segundo_plano,
+            args=(self._estado, cerebro, self._cancelar_agente,
+                  self._generacion),
+            daemon=True,   # No debe impedir que la ventana se cierre.
+        )
+        hilo.start()
+        self.after(config.PAUSA_MINIMA_AGENTE_MS, self._sondear_agente)
+        self._refrescar_panel_agente()
+
+    def _pensar_en_segundo_plano(self, estado, cerebro, cancelar,
+                                 generacion) -> None:
+        """Cuerpo del hilo trabajador.
+
+        IMPORTANTE: aqui no se toca ni un solo widget. Tkinter no es
+        seguro para multiples hilos; hacerlo produce cierres
+        inesperados dificiles de reproducir. La unica comunicacion con
+        la interfaz es depositar una tupla en la cola.
+
+        Trabajar sobre `estado` es seguro sin copiarlo ni bloquear
+        nada porque el motor es puro: el hilo no puede modificarlo.
+        """
+        try:
+            resultado = cerebro.elegir(estado, cancelar=cancelar)
+            self._cola_agente.put((generacion, resultado, None))
+        except Exception as error:            # noqa: BLE001
+            # Cualquier fallo viaja a la interfaz para mostrarse ahi;
+            # una excepcion perdida en un hilo daemon dejaria la
+            # partida colgada en "pensando" sin explicacion.
+            self._cola_agente.put((generacion, None, error))
+
+    def _sondear_agente(self) -> None:
+        """Consulta la cola desde el hilo de Tkinter."""
+        if not self._pensando:
+            return
+        try:
+            generacion, resultado, error = self._cola_agente.get_nowait()
+        except queue.Empty:
+            # Todavia piensa: se anima el indicador y se vuelve a mirar.
+            self._fase_animacion += 1
+            self._actualizar_indicador_pensando()
+            self.after(config.INTERVALO_SONDEO_AGENTE_MS,
+                       self._sondear_agente)
+            return
+
+        self._pensando = False
+
+        # Resultado de una partida anterior (el usuario reinicio o
+        # deshizo mientras el bot pensaba): se descarta.
+        if generacion != self._generacion:
+            return
+
+        if error is not None:
+            self._etiqueta_mensaje.configure(
+                text="El agente fallo: %s" % error,
+                fg=config.PALETA["aviso_error"])
+            return
+
+        self._ultimo_resultado_agente = resultado
+        self._ultima_jugada_agente = resultado.movimiento
+        self._jugar(resultado.movimiento)
+
+    def _detener_agente(self) -> None:
+        """Cancela la busqueda en curso e invalida su resultado.
+
+        Se llama antes de reiniciar, deshacer o cambiar de pantalla.
+        Subir la generacion basta para ignorar lo que llegue tarde; la
+        senal de cancelacion, ademas, hace que el hilo termine pronto
+        en vez de seguir gastando CPU.
+        """
+        self._generacion += 1
+        if self._cancelar_agente is not None:
+            self._cancelar_agente.set()
+        self._pensando = False
+        self._ultima_jugada_agente = None
+
     # -- botones -----------------------------------------------------
 
     def _deshacer(self) -> None:
-        """Retrocede una jugada.
+        """Retrocede hasta la ultima decision de una persona.
 
-        Basta con descartar el ultimo estado: como aplicar() nunca muto
-        el anterior, el estado previo sigue intacto en la pila.
+        Basta con descartar estados: como aplicar() nunca muto el
+        anterior, cada estado previo sigue intacto en la pila.
+
+        Contra un bot no se retrocede UNA jugada sino todas las que
+        haga falta hasta que vuelva a tocarle al humano. Deshacer solo
+        una devolveria el turno al agente, que repetiria su jugada al
+        instante (es determinista) y el boton pareceria no funcionar.
         """
         if len(self._estados) <= 1:
             return
+        self._detener_agente()
+
         self._estados.pop()
         if self._jugadas:
             self._jugadas.pop()
+
+        # Si hay agentes en juego, seguir retrocediendo mientras el
+        # turno no sea de una persona.
+        if self._agentes:
+            while len(self._estados) > 1 and not self._turno_es_humano():
+                self._estados.pop()
+                if self._jugadas:
+                    self._jugadas.pop()
+
         self._seleccion = None
         self._destinos = {}
         self._refrescar()
 
     def _reiniciar(self) -> None:
+        self._detener_agente()
+        for cerebro in self._agentes.values():
+            cerebro.reiniciar()
         self._estados = self._estados[:1]
         self._jugadas = []
         self._seleccion = None
         self._destinos = {}
+        self._ultimo_resultado_agente = None
         self._refrescar()
 
     def _nuevo_tablero(self) -> None:
+        self._detener_agente()
         self._aplicacion.mostrar_configuracion()
 
     # =================================================================
@@ -934,8 +1246,11 @@ class PantallaJuego(tk.Frame):
             self._etiqueta_objetivo.configure(
                 text=motor.motivo_de_termino(estado) or "")
         else:
+            quien = self._controlador[estado.turno]
+            sufijo = "" if quien == "humano" else "  (bot)"
             self._etiqueta_turno.configure(
-                text="Turno de %s" % config.NOMBRES_JUGADORES[estado.turno])
+                text="Turno de %s%s"
+                     % (config.NOMBRES_JUGADORES[estado.turno], sufijo))
             self._etiqueta_objetivo.configure(
                 text=config.OBJETIVOS_JUGADORES[estado.turno].capitalize())
 
@@ -965,6 +1280,10 @@ class PantallaJuego(tk.Frame):
             self._etiqueta_mensaje.configure(
                 text=motor.motivo_de_termino(estado) or "",
                 fg=paleta["texto_principal"])
+        elif not self._turno_es_humano():
+            self._etiqueta_mensaje.configure(
+                text="El bot esta analizando la posicion...",
+                fg=paleta["texto_secundario"])
         else:
             cantidad = len(motor.movimientos_legales(estado))
             self._etiqueta_mensaje.configure(
@@ -974,7 +1293,74 @@ class PantallaJuego(tk.Frame):
                 fg=paleta["texto_secundario"])
 
         self._boton_deshacer.habilitar(len(self._estados) > 1)
+        self._refrescar_panel_agente()
         self._dibujar()
+
+        # Ultimo paso: si le toca a un bot, se pone a pensar. Va aqui,
+        # despues de dibujar, para que el usuario vea el tablero
+        # actualizado antes de que empiece la busqueda.
+        self._lanzar_turno_del_agente()
+
+    # =================================================================
+    # PANEL DEL AGENTE
+    # =================================================================
+
+    def _refrescar_panel_agente(self) -> None:
+        """Muestra el estado y las estadisticas de la ultima busqueda.
+
+        Estos numeros no son decoracion: son la evidencia de que la
+        poda funciona. En la interrogacion permiten comparar nodos
+        visitados y podas entre un nivel y otro sin salir del juego.
+        """
+        if self._tarjeta_agente is None:
+            return
+
+        if self._pensando:
+            self._actualizar_indicador_pensando()
+            return
+
+        resultado = self._ultimo_resultado_agente
+        if resultado is None:
+            self._titulo_agente.configure(
+                text="Bot (%s)" % self._nivel.capitalize())
+            self._detalle_agente.configure(text="Aun no ha jugado.")
+            return
+
+        # El puntaje se muestra siempre desde el punto de vista DEL BOT,
+        # que es su jugador_max. Decirlo evita la confusion de leer un
+        # numero negativo y creer que va perdiendo el humano.
+        if abs(resultado.valor) >= config.UMBRAL_VICTORIA:
+            veredicto = ("Ve una victoria forzada suya."
+                         if resultado.valor > 0
+                         else "Se ve perdido con juego perfecto.")
+        else:
+            veredicto = "Se evalua a si mismo en %+.1f pasos." % (
+                resultado.valor,)
+
+        self._titulo_agente.configure(
+            text="Bot (%s)  ·  %.2f s" % (self._nivel.capitalize(),
+                                          resultado.segundos))
+        self._detalle_agente.configure(
+            text="%s\nProfundidad %d%s  ·  %s nodos  ·  %s podas\n"
+                 "%s aciertos de tabla"
+                 % (veredicto, resultado.profundidad,
+                    "" if resultado.completa else " (cortado por tiempo)",
+                    "{:,}".format(resultado.nodos).replace(",", " "),
+                    "{:,}".format(resultado.podas).replace(",", " "),
+                    "{:,}".format(resultado.aciertos_tabla).replace(",",
+                                                                    " ")))
+
+    def _actualizar_indicador_pensando(self) -> None:
+        """Anima los puntos suspensivos mientras el agente calcula."""
+        if self._tarjeta_agente is None:
+            return
+        puntos = "." * (1 + self._fase_animacion // 4 % 3)
+        self._titulo_agente.configure(
+            text="Bot (%s) pensando%s" % (self._nivel.capitalize(), puntos))
+        self._detalle_agente.configure(
+            text="Profundidad objetivo %d, tope de %.0f s."
+                 % (config.NIVELES[self._nivel]["profundidad"],
+                    config.NIVELES[self._nivel]["segundos"]))
 
     def _dibujar_barra_progreso(self, barra: tk.Canvas, jugador: str,
                                 fuera: int, total: int) -> None:
@@ -1006,7 +1392,9 @@ class PantallaJuego(tk.Frame):
 class AplicacionDodgem(tk.Tk):
     """Ventana principal: alterna entre configuracion y partida."""
 
-    def __init__(self, n_inicial: Optional[int] = None):
+    def __init__(self, n_inicial: Optional[int] = None,
+                 modo: Optional[str] = None,
+                 nivel: Optional[str] = None):
         super().__init__()
         self.title("%s - %s" % (config.TITULO_VENTANA,
                                 config.SUBTITULO_VENTANA))
@@ -1017,13 +1405,22 @@ class AplicacionDodgem(tk.Tk):
         self._familia = _familia_tipografica(self)
         self._pantalla: Optional[tk.Frame] = None
 
+        self._modo = modo or config.MODO_POR_DEFECTO
+        self._nivel = nivel or config.NIVEL_POR_DEFECTO
+
+        # Cerrar la ventana debe cancelar cualquier busqueda en curso.
+        self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
+
         if n_inicial is not None and motor.validar_n(n_inicial):
-            self.iniciar_partida(n_inicial)
+            self.iniciar_partida(n_inicial, self._modo, self._nivel)
         else:
             self.mostrar_configuracion()
 
     def _cambiar_pantalla(self, pantalla: tk.Frame) -> None:
         if self._pantalla is not None:
+            detener = getattr(self._pantalla, "_detener_agente", None)
+            if detener is not None:
+                detener()
             self._pantalla.destroy()
         self._pantalla = pantalla
         pantalla.pack(fill=tk.BOTH, expand=True)
@@ -1032,12 +1429,29 @@ class AplicacionDodgem(tk.Tk):
         self._cambiar_pantalla(
             PantallaConfiguracion(self, self, self._familia))
 
-    def iniciar_partida(self, n: int) -> None:
+    def iniciar_partida(self, n: int, modo: Optional[str] = None,
+                        nivel: Optional[str] = None) -> None:
+        self._modo = modo or self._modo
+        self._nivel = nivel or self._nivel
         self._cambiar_pantalla(
-            PantallaJuego(self, self, self._familia, n))
+            PantallaJuego(self, self, self._familia, n,
+                          self._modo, self._nivel))
+
+    def _al_cerrar(self) -> None:
+        """Cancela la busqueda antes de destruir la ventana.
+
+        El hilo del agente es daemon, asi que no impediria salir, pero
+        avisarle evita que siga consumiendo CPU durante el cierre.
+        """
+        if self._pantalla is not None:
+            detener = getattr(self._pantalla, "_detener_agente", None)
+            if detener is not None:
+                detener()
+        self.destroy()
 
 
-def lanzar(n_inicial: Optional[int] = None) -> None:
+def lanzar(n_inicial: Optional[int] = None, modo: Optional[str] = None,
+           nivel: Optional[str] = None) -> None:
     """Punto de entrada de la interfaz grafica."""
-    aplicacion = AplicacionDodgem(n_inicial)
+    aplicacion = AplicacionDodgem(n_inicial, modo, nivel)
     aplicacion.mainloop()

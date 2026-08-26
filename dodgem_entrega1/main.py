@@ -35,6 +35,17 @@ def construir_analizador() -> argparse.ArgumentParser:
                  config.TAMANO_MAXIMO_TABLERO)),
     )
     analizador.add_argument(
+        "--modo", choices=sorted(config.CONTROLADOR_POR_MODO),
+        default=None,
+        help=("Quien controla cada jugador. Por defecto se elige en la "
+              "interfaz (%s)." % config.MODO_POR_DEFECTO),
+    )
+    analizador.add_argument(
+        "--nivel", choices=list(config.ORDEN_NIVELES), default=None,
+        help=("Nivel del bot: profundidad de busqueda. Por defecto %s."
+              % config.NIVEL_POR_DEFECTO),
+    )
+    analizador.add_argument(
         "--diagnostico", action="store_true",
         help=("Imprime en consola el estado inicial y sus movimientos "
               "legales, sin abrir la interfaz. Util para depurar."),
@@ -92,7 +103,7 @@ def main(argumentos=None) -> int:
         )
         return 1
 
-    gui.lanzar(opciones.n)
+    gui.lanzar(opciones.n, opciones.modo, opciones.nivel)
     return 0
 
 

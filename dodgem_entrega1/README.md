@@ -1,7 +1,7 @@
-# Dodgem — Entrega 1
+# Dodgem
 
-Juego de tablero **Dodgem** para dos jugadores humanos, con interfaz
-gráfica. Fundamentos de Inteligencia Artificial.
+Juego de tablero **Dodgem** con interfaz gráfica y agente Minimax.
+Fundamentos de Inteligencia Artificial.
 
 Sin dependencias externas: solo la biblioteca estándar de Python 3.8+
 (Tkinter viene incluido).
@@ -11,10 +11,14 @@ Sin dependencias externas: solo la biblioteca estándar de Python 3.8+
 ## Cómo ejecutar
 
 ```bash
-python main.py              # abre la pantalla de configuración
-python main.py --n 8        # arranca directamente en un tablero 8 x 8
-python main.py --n 10 --diagnostico   # imprime el estado inicial y sale
+python main.py                       # abre la pantalla de configuración
+python main.py --n 8                 # tablero 8 x 8
+python main.py --modo humano_vs_agente --nivel dificil
+python main.py --n 10 --diagnostico  # imprime el estado inicial y sale
 ```
+
+Modos: `humano_vs_humano`, `humano_vs_agente`, `agente_vs_humano`,
+`agente_vs_agente`. Niveles: `facil`, `medio`, `dificil`, `experto`.
 
 Si Tkinter no está instalado (algunas distribuciones de Linux lo
 separan del intérprete):
@@ -34,15 +38,18 @@ sudo apt install python3-tk
 | `gui.py` | Interfaz Tkinter: dibuja y traduce clics. | No |
 | `main.py` | Punto de entrada y argumentos de línea de comandos. | No |
 | `heuristica.py` | Función de evaluación (Semana 3). | No, solo la mide |
+| `agente.py` | Minimax + Alfa-Beta + transposiciones (Fase 2). | No, solo la busca |
 | `pruebas_motor.py` | 41 pruebas unitarias del motor. | No |
 | `pruebas_heuristica.py` | 30 pruebas de la heurística. | No |
+| `pruebas_agente.py` | 23 pruebas del agente. | No |
 | `banco_heuristica.py` | Banco de medición. **No es entrega.** | No |
+| `banco_agente.py` | Banco de medición. **No es entrega.** | No |
 
 La regla de oro del diseño: **`gui.py` no sabe jugar al Dodgem.** Si
 una jugada aparece resaltada en pantalla es porque
 `motor.movimientos_legales()` la devolvió. Esa frontera es lo que
-permitirá, en la Fase 2, reemplazar a un humano por un agente Minimax
-sin tocar la interfaz.
+permitió, en la Fase 2, enchufar el agente sin tocar ni una regla:
+`gui.py` solo aprendió *a quién pedirle* la jugada, no *cómo* elegirla.
 
 ---
 
@@ -133,10 +140,10 @@ Todo lo siguiente se cambia editando **solo `config.py`**, sin tocar
 ## Pruebas
 
 ```bash
-python -m unittest pruebas_motor -v
+python -m unittest pruebas_motor pruebas_heuristica pruebas_agente -v
 ```
 
-40 pruebas que cubren: validación de `n`, disposición inicial para
+**94 pruebas en total.** Las 41 del motor cubren: validación de `n`, disposición inicial para
 todos los tamaños, prohibición de retroceder, reglas de salida por el
 borde correcto, pureza de `aplicar()`, condiciones de victoria y de
 bloqueo (con ambas convenciones), tablas, y una simulación de partidas
@@ -278,24 +285,150 @@ TOTAL                         +0.0   (1 punto = 1 paso de avance)
 
 ---
 
-## Preparado para la Fase 2 (Minimax + poda Alfa-Beta)
 
-Lo que ya está resuelto para el agente:
+## El agente Minimax (Fase 2)
 
-1. **Funciones puras**: `aplicar()` devuelve un estado nuevo, así que
-   la recursión no necesita deshacer jugadas.
-2. **Estados hashables**: tabla de transposiciones sin trabajo extra.
-3. **Orden de jugadas**: `movimientos_legales()` entrega primero las
-   salidas y los avances (`config.ORDEN_TIPOS_MOVIMIENTO`), que es el
-   orden que provoca más cortes en la poda Alfa-Beta.
-4. **Corte de profundidad infinita**: el contador `sin_progreso` y la
-   regla opcional de tablas evitan ramas que nunca terminan.
-5. **Interruptor de rendimiento**:
-   `config.VALIDAR_MOVIMIENTOS_AL_APLICAR = False` elimina la
-   revalidación dentro de `aplicar()` cuando el buscador ya garantiza
-   que el movimiento es legal.
+Archivos: `agente.py` (entrega), `pruebas_agente.py` (23 pruebas),
+`banco_agente.py` (banco de medición, **no** es entrega).
 
-El agente se conectará con una función nueva del tipo
-`elegir_movimiento(estado) -> Movimiento`; la interfaz solo tendrá que
-llamarla cuando el turno sea del agente y pasar el resultado a
-`aplicar()`.
+```python
+AgenteMinimax(jugador, nivel).elegir(estado) -> Resultado
+elegir_movimiento(estado, nivel=...) -> Movimiento   # API mínima
+```
+
+### Cómo se juega contra él
+
+En la pantalla de configuración se elige el modo (Humano vs Humano,
+Humano vs Bot, Bot vs Humano, Bot vs Bot) y el nivel. Durante la
+partida, el panel lateral muestra en vivo la profundidad alcanzada,
+los nodos visitados, las podas y los aciertos de tabla: son la
+evidencia de que la poda funciona, sin salir del juego.
+
+### Las tres técnicas
+
+**1. Poda Alfa-Beta** (obligatoria según el enunciado). `alfa` es lo
+mejor que MAX tiene asegurado; `beta`, lo mejor de MIN. Cuando
+`alfa ≥ beta` la rama ya no puede influir en la decisión y se corta.
+
+**2. Tabla de transposiciones.** Distintas secuencias de jugadas
+llegan a la misma posición. Aquí se cobra la decisión de la Entrega 1:
+`Estado` es un `NamedTuple` de `frozenset`, o sea **hashable**, y
+sirve tal cual como clave de un diccionario.
+
+**3. Profundización iterativa.** Se busca a profundidad 1, 2, 3…
+Parece desperdicio repetir trabajo, pero cada iteración deja en la
+tabla la mejor jugada de cada posición, y eso hace que la siguiente
+pode mucho más. Además siempre hay una respuesta lista, que es lo que
+permite tener un tope de tiempo sin devolver una búsqueda a medias.
+
+### El detalle delicado: puntajes de victoria en la tabla
+
+`evaluar()` devuelve `VICTORIA − profundidad`, así que el valor
+depende de **dónde** está el nodo en el árbol, no solo de la posición.
+Guardarlo tal cual y reutilizarlo desde otra profundidad haría creer
+al agente que tiene una victoria más cercana (o más lejana) de lo que
+es. Al guardar se convierte a "distancia desde este nodo" sumando el
+ply; al leer se deshace. Los puntajes heurísticos normales no se tocan.
+
+Es el error clásico de un Minimax con transposiciones, y es
+exactamente lo que caza `test_la_tabla_no_altera_el_valor`.
+
+### La prueba que importa
+
+Una optimización que cambia el resultado es un error. `agente.py`
+incluye `minimax_sin_poda()`, una implementación de referencia
+deliberadamente lenta y obviamente correcta, y las pruebas comparan
+las dos búsquedas sobre decenas de posiciones y varias profundidades:
+
+```python
+minimax_sin_poda(estado, d, jugador) == valor_con_alfa_beta(estado, d, jugador)
+```
+
+El banco repite esa comprobación con `assert` en cada medición, para
+que ningún número de nodos se reporte sin haber verificado antes que
+el valor sigue siendo el mismo.
+
+### Evidencia (tablero 6×6)
+
+Nodos visitados desde la posición inicial — **las tres columnas
+devuelven el mismo valor**:
+
+| Profundidad | Sin poda | Con poda | Poda + tabla | Ahorro |
+|---|---|---|---|---|
+| 3 | 326 | 135 | 135 | 2,4× |
+| 4 | 2 702 | 584 | 469 | 5,8× |
+| 5 | 24 028 | 2 214 | 1 475 | **16,3×** |
+
+Tiempo por jugada (el `*` marca que actuó el tope de seguridad):
+
+| Nivel | n=6 | n=10 | n=16 |
+|---|---|---|---|
+| fácil (prof. 2) | 0,00 s | 0,00 s | 0,01 s |
+| medio (prof. 4) | 0,01 s | 0,03 s | 0,25 s |
+| difícil (prof. 6) | 0,09 s | 0,78 s | 8,02 s* |
+| experto (prof. 8) | 0,50 s | 5,67 s | 15,04 s* |
+
+Esto es justo lo que justifica el diseño elegido: la profundidad manda
+(el bot es determinista y reproducible), y el tope de tiempo solo se
+activa en tableros grandes para que la ventana no se congele.
+
+Calidad de juego (20 partidas, apertura aleatoria distinta en cada una):
+
+| Enfrentamiento | Resultado |
+|---|---|
+| fácil / medio / difícil contra aleatorio | 20-0 los tres |
+| medio contra fácil | 11-1 (8 sin resolver) |
+| difícil contra medio | 12-5 (3 sin resolver) |
+
+> Las "sin resolver" son partidas que llegaron al tope de 400 jugadas.
+> Es la propiedad conocida del Dodgem en tableros pares: con juego
+> defensivo por ambos lados la partida puede no terminar. Para
+> demostraciones bot contra bot conviene activar
+> `config.TABLAS_HABILITADAS`.
+
+> Advertencia metodológica: los agentes son **deterministas**, así que
+> enfrentarlos desde la posición inicial produciría siempre la misma
+> partida y "20 partidas" serían una repetida veinte veces. Por eso
+> cada partida del banco arranca con 4 jugadas al azar.
+
+### La interfaz no se congela
+
+La búsqueda **no** puede correr en el hilo de Tkinter: mientras
+calcula, la ventana dejaría de repintarse y el sistema la marcaría
+como "no responde". El agente corre en un hilo aparte que deja el
+resultado en una `queue.Queue`, y el hilo de la interfaz la consulta
+cada 50 ms con `after()`.
+
+Regla de oro respetada en todo el código: **solo el hilo de Tkinter
+toca widgets**. El hilo trabajador únicamente pone una tupla en la
+cola. Y trabajar sobre el estado desde otro hilo es seguro sin copiar
+ni bloquear nada precisamente porque el motor es puro.
+
+Detalles que evitan errores reales:
+
+* **Generación de partida.** Si el usuario reinicia mientras el bot
+  piensa, el resultado que llegue tarde trae una generación antigua y
+  se descarta. Sin esto, el bot aplicaría una jugada de una partida
+  que ya no existe.
+* **Cancelación.** Un `threading.Event` que la búsqueda consulta cada
+  2048 nodos: aborta pronto en vez de seguir gastando CPU.
+* **Tablero en solo lectura** durante el turno del bot.
+* **Deshacer** retrocede hasta la última decisión *humana*, no una
+  sola jugada: deshacer una devolvería el turno al bot, que repetiría
+  su jugada al instante (es determinista) y el botón parecería roto.
+
+Todo eso está verificado sin servidor gráfico, con un doble de prueba
+de Tkinter que simula el bucle de eventos: se comprueba el ciclo
+completo —lanzar el hilo, sondear la cola, aplicar la jugada, y
+descartar un resultado obsoleto tras un reinicio a media búsqueda—.
+
+### Parámetros del agente
+
+| Quiero cambiar… | Constante en `config.py` |
+|---|---|
+| Profundidad o tope de tiempo de un nivel | `NIVELES` |
+| Añadir un nivel nuevo | `NIVELES` + `ORDEN_NIVELES` (la interfaz lo muestra sola) |
+| Modo de juego por defecto | `MODO_POR_DEFECTO` |
+| Tamaño de la tabla de transposiciones | `MAXIMO_ENTRADAS_TRANSPOSICION` |
+| Conservar la tabla entre jugadas | `REUSAR_TABLA_ENTRE_JUGADAS` |
+| Pausa mínima antes de que el bot mueva | `PAUSA_MINIMA_AGENTE_MS` |
