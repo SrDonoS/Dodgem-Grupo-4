@@ -39,9 +39,9 @@ sudo apt install python3-tk
 | `main.py` | Punto de entrada y argumentos de línea de comandos. | No |
 | `heuristica.py` | Función de evaluación (Semana 3). | No, solo la mide |
 | `agente.py` | Minimax + Alfa-Beta + transposiciones (Fase 2). | No, solo la busca |
-| `pruebas_motor.py` | 41 pruebas unitarias del motor. | No |
-| `pruebas_heuristica.py` | 30 pruebas de la heurística. | No |
-| `pruebas_agente.py` | 23 pruebas del agente. | No |
+| `pruebas_motor.py` | 44 pruebas unitarias del motor. | No |
+| `pruebas_heuristica.py` | 31 pruebas de la heurística. | No |
+| `pruebas_agente.py` | 33 pruebas del agente. | No |
 | `banco_heuristica.py` | Banco de medición. **No es entrega.** | No |
 | `banco_agente.py` | Banco de medición. **No es entrega.** | No |
 
@@ -143,7 +143,7 @@ Todo lo siguiente se cambia editando **solo `config.py`**, sin tocar
 python -m unittest pruebas_motor pruebas_heuristica pruebas_agente -v
 ```
 
-**94 pruebas en total.** Las 41 del motor cubren: validación de `n`, disposición inicial para
+**108 pruebas en total.** Las 44 del motor cubren: validación de `n`, disposición inicial para
 todos los tamaños, prohibición de retroceder, reglas de salida por el
 borde correcto, pureza de `aplicar()`, condiciones de victoria y de
 bloqueo (con ambas convenciones), tablas, y una simulación de partidas
@@ -432,3 +432,143 @@ descartar un resultado obsoleto tras un reinicio a media búsqueda—.
 | Tamaño de la tabla de transposiciones | `MAXIMO_ENTRADAS_TRANSPOSICION` |
 | Conservar la tabla entre jugadas | `REUSAR_TABLA_ENTRE_JUGADAS` |
 | Pausa mínima antes de que el bot mueva | `PAUSA_MINIMA_AGENTE_MS` |
+
+---
+
+## Visualización del razonamiento del agente
+
+El panel lateral muestra, cada vez que el bot mueve, **qué jugadas
+tenía disponibles y qué puntaje le dio a cada una**. Y justo antes de
+mover, dibuja sobre el tablero las que consideró mejores.
+
+### El problema que había que resolver
+
+Renderizar cada tablero que evalúa Minimax es inviable: a profundidad
+6 son decenas de miles de nodos por jugada, la ventana se congelaría y
+además sería ilegible.
+
+La solución es no dibujar el árbol, sino **solo su raíz**: las jugadas
+legales de este turno. Son entre 5 y 45 filas, no decenas de miles, y
+se dibujan **una vez**, cuando la búsqueda ya terminó.
+
+### ⚠️ El detalle que hace honesta la tabla
+
+Con poda Alfa-Beta, **el puntaje de las jugadas que no son la mejor no
+es exacto**. La poda corta en cuanto sabe que una jugada es peor que
+otra ya conocida, y devuelve una **cota** en lugar del valor real:
+"algo ≤ 4", no "4". Publicar esas cifras como si fueran puntajes sería
+mentir en pantalla.
+
+Por eso, cuando `config.EXPLICAR_JUGADAS` está activo, la búsqueda de
+la raíz renuncia a podar **entre hermanos**: cada jugada se explora con
+la ventana completa `(-∞, +∞)`, que es la condición que garantiza un
+valor exacto. Dentro de cada rama la poda sigue funcionando igual.
+
+Además, en ese modo la tabla de transposiciones solo corta con entradas
+**exactas**; las de tipo cota se usan únicamente para ordenar.
+
+> Que los puntajes mostrados son exactos no es una afirmación: lo
+> comprueba `test_los_puntajes_mostrados_son_exactos`, que compara cada
+> valor de la lista contra `minimax_sin_poda` de esa misma jugada.
+
+### El precio, medido
+
+Nodos por jugada, media sobre 10 posiciones:
+
+| Nivel | n | Sin panel | Con panel | Factor |
+|---|---|---|---|---|
+| fácil | 6 | 41 | 80 | 1,9× |
+| medio | 6 | 732 | 1 691 | 2,3× |
+| medio | 10 | 2 539 | 7 427 | 2,9× |
+| difícil | 6 | 7 968 | 21 437 | 2,7× |
+| difícil | 10 | 62 312 | 150 894 | 2,4× |
+
+En 6×6 ni se nota. En 10×10 a nivel difícil sube de ~2 s a ~5,6 s, aún
+por debajo del tope de seguridad de 8 s. Si en la evaluación se quiere
+máxima velocidad: `config.EXPLICAR_JUGADAS = False`.
+
+> **Una optimización que no funcionó.** Parece más barato buscar normal
+> en todas las iteraciones y hacer una sola pasada explicativa al final,
+> con la tabla ya caliente. Se probó: sale entre **8% y 11% peor**. El
+> motivo es que las iteraciones rápidas llenan la tabla de entradas de
+> tipo *cota*, que la pasada exacta tiene que rechazar. Explicar desde
+> el principio la llena de entradas *exactas*, que sí se reutilizan.
+
+### Lo que ve el usuario
+
+**1. Mientras piensa** — el panel muestra `🤖 Agente calculando...` con
+puntos animados, el nivel y la profundidad objetivo. La animación la
+mueve el sondeo de la cola que ya ocurría cada 50 ms, así que no cuesta
+un temporizador aparte.
+
+**2. Cuando decide** — la tabla de jugadas:
+
+```
+🤖 Bot (Dificil)  ·  0.93 s
+Se evalua a si mismo en -4.9 pasos.
+Profundidad 6 · 15 141 nodos · 2 448 podas
+────────────────────────────────────────
+● f6c2 -> f5c2                -4.9  ✓
+● f6c6 -> f5c6                -4.9
+● f6c4 -> f5c4                -5.1
+● f6c5 -> f5c5                -5.3
+● f6c3 -> f5c3                -5.7
+● f6c2 -> f6c1                -8.5
+6 jugadas evaluadas en total
+```
+
+El punto de color va de gris (la peor opción) a verde (la mejor), y la
+elegida va resaltada y encabeza la lista.
+
+**3. Antes de mover** — sobre el tablero se dibujan flechas desde el
+origen hasta el destino de las mejores candidatas, con un anillo en la
+casilla de llegada y el puntaje de la mejor. Se mantienen
+`config.MS_RESALTE_CONSIDERACION` milisegundos (900 por defecto) y
+luego el bot ejecuta la jugada.
+
+Esa pausa es lo que convierte la búsqueda en algo observable: sin ella,
+la información aparecería y desaparecería en el mismo fotograma.
+
+### La separación de capas se mantiene
+
+`gui.py` sigue sin saber jugar al Dodgem:
+
+| Quién | Qué hace |
+|---|---|
+| `agente.py` | Calcula los puntajes, los ordena y asigna a cada uno una `calidad` de 0 a 1 |
+| `motor.py` | Formatea la etiqueta `f1c1 -> f1c2` (`etiqueta_corta_de_movimiento`) |
+| `gui.py` | Recibe la lista ya ordenada y puntuada; escribe texto y traduce `calidad` a un color |
+
+Decidir qué jugada es "buena" es un juicio sobre el juego, así que vive
+en el agente. La interfaz solo mapea un número a un color.
+
+### La máquina de estados del turno del bot
+
+El turno del agente tiene **tres** fases, no dos, porque entre "ya
+decidió" y "ya movió" está el momento de enseñar sus candidatas:
+
+| Fase | Qué pasa |
+|---|---|
+| `inactivo` | No le toca, o ya movió |
+| `pensando` | Hay un hilo buscando; el panel anima el indicador |
+| `mostrando` | Terminó, se ven sus candidatas, **aún no mueve** |
+
+Durante `mostrando` el tablero sigue bloqueado al clic y no puede
+lanzarse una segunda búsqueda. Y si el usuario reinicia en ese momento,
+el contador de generación descarta la jugada — verificado en
+`probar_reinicio_durante_la_revelacion`.
+
+### Parámetros
+
+| Constante | Qué controla |
+|---|---|
+| `EXPLICAR_JUGADAS` | Activa el desglose (y su coste) |
+| `MAXIMO_JUGADAS_EXPLICADAS` | Filas en el panel (7) |
+| `RESALTAR_JUGADAS_CONSIDERADAS` | Marcas sobre el tablero |
+| `MAXIMO_JUGADAS_RESALTADAS` | Cuántas flechas se dibujan (4) |
+| `MS_RESALTE_CONSIDERACION` | Duración de la pausa (900 ms) |
+| `PREFIJO_PENSANDO` | El emoji del indicador |
+
+> **Sobre el emoji 🤖:** Tkinter lo renderiza bien en Windows y macOS.
+> En algunas distribuciones de Linux sin fuente de emoji instalada
+> aparece un recuadro; si pasa, `PREFIJO_PENSANDO = ""` lo quita.

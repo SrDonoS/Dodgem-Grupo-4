@@ -173,6 +173,38 @@ def _linea_de_partida(n: int,
     return [(fila, columna) for columna in range(n)]
 
 
+def _recortar_linea(casillas: List[Casilla], cantidad: int,
+                    esquina: Optional[Casilla],
+                    jugador: str) -> FrozenSet[Casilla]:
+    """Deja exactamente `cantidad` fichas sobre la linea de partida.
+
+    Si la linea tiene mas casillas que fichas a repartir, se descartan
+    las mas CERCANAS a la esquina compartida. Ese criterio no es
+    caprichoso: la esquina es la zona donde los dos bandos se estorban
+    desde la primera jugada, asi que quitar fichas de ahi es lo que
+    menos altera el caracter de la apertura. Ademas es independiente de
+    la orientacion, asi que sigue teniendo sentido si en config.py se
+    invierte la direccion de avance de un jugador.
+    """
+    if cantidad > len(casillas):
+        raise ValueError(
+            "Se piden %d fichas para %s pero su borde solo ofrece %d "
+            "casillas. Revisa config.FICHAS_MENOS_QUE_LADO."
+            % (cantidad, config.NOMBRES_JUGADORES[jugador], len(casillas)))
+    if cantidad < 0:
+        raise ValueError("La cantidad de fichas no puede ser negativa.")
+
+    if esquina is None:
+        ordenadas = sorted(casillas)
+    else:
+        ordenadas = sorted(
+            casillas,
+            key=lambda casilla: (-(abs(casilla[0] - esquina[0])
+                                   + abs(casilla[1] - esquina[1])),
+                                 casilla))
+    return frozenset(ordenadas[:cantidad])
+
+
 def _clave_de_orden(movimiento: Movimiento) -> Tuple[int, int, int, int, int]:
     """Clave de ordenamiento estable para la lista de jugadas.
 
@@ -263,11 +295,19 @@ def estado_inicial(n: int) -> Estado:
         * La casilla comun a ambas lineas (la esquina inferior
           izquierda) queda VACIA.
 
-    Al descontar esa esquina compartida, cada jugador queda
-    automaticamente con n - 1 fichas, sin necesidad de contar a mano.
+    Al descontar esa esquina compartida, cada jugador queda con n - 1
+    fichas, que es justo lo que pide el enunciado.
+
+    La cantidad final la manda fichas_por_jugador(), asi que cambiar
+    config.FICHAS_MENOS_QUE_LADO reparte de verdad menos fichas (no
+    solo cambia lo que dice el marcador). Cuando sobran casillas se
+    descartan las mas cercanas a la esquina compartida, que es donde
+    se produce el atasco inicial.
 
     Lanza:
-        ValueError: si n no supera validar_n().
+        ValueError: si n no supera validar_n(), si se piden mas fichas
+                    de las que caben en el borde, o si la configuracion
+                    dejaria dos fichas en la misma casilla.
     """
     if not validar_n(n):
         raise ValueError(motivo_invalidez(n) or "Tamano de tablero invalido.")
@@ -277,12 +317,35 @@ def estado_inicial(n: int) -> Estado:
 
     # La interseccion de ambas lineas es exactamente una casilla: la
     # esquina donde se cruzan los dos bordes de partida.
-    esquina_compartida: Set[Casilla] = set(linea_a) & set(linea_b)
-    if not config.ESQUINA_COMPARTIDA_VACIA:
-        esquina_compartida = set()
+    compartidas: Set[Casilla] = set(linea_a) & set(linea_b)
+    esquina = min(compartidas) if compartidas else None
 
-    fichas_a = frozenset(linea_a) - esquina_compartida
-    fichas_b = frozenset(linea_b) - esquina_compartida
+    if config.ESQUINA_COMPARTIDA_VACIA:
+        # Disposicion oficial: ninguno de los dos la ocupa.
+        libres_a = [c for c in linea_a if c not in compartidas]
+        libres_b = [c for c in linea_b if c not in compartidas]
+    else:
+        # La casilla NO puede pertenecer a los dos bandos a la vez: dos
+        # fichas en la misma casilla es un estado ilegal que romperia
+        # movimientos_legales(). Se adjudica al primer jugador
+        # declarado en config.JUGADORES.
+        primero = config.JUGADORES[0]
+        libres_a = [c for c in linea_a
+                    if primero == config.JUGADOR_A or c not in compartidas]
+        libres_b = [c for c in linea_b
+                    if primero == config.JUGADOR_B or c not in compartidas]
+
+    objetivo = fichas_por_jugador(n)
+    fichas_a = _recortar_linea(libres_a, objetivo, esquina, config.JUGADOR_A)
+    fichas_b = _recortar_linea(libres_b, objetivo, esquina, config.JUGADOR_B)
+
+    # Invariante de seguridad: si una configuracion exotica dejara dos
+    # fichas encimadas, es mejor fallar aqui con un mensaje claro que
+    # arrancar una partida corrupta.
+    if fichas_a & fichas_b:
+        raise ValueError(
+            "La configuracion coloca fichas de ambos jugadores en %s."
+            % sorted(fichas_a & fichas_b))
 
     return Estado(
         n=n,
@@ -574,6 +637,21 @@ def a_coordenada_humana(casilla: Casilla) -> str:
     """
     fila, columna = casilla
     return "f%dc%d" % (fila + 1, columna + 1)
+
+
+def etiqueta_corta_de_movimiento(movimiento: Movimiento) -> str:
+    """Notacion breve de una jugada: "f1c1 -> f1c2" o "f3c6 -> SALE".
+
+    Se usa en el panel de razonamiento del agente, donde el espacio es
+    escaso y el jugador ya se sabe. Vive aqui, y no en la interfaz,
+    porque la conversion de base 0 a la numeracion del enunciado debe
+    ocurrir en un solo sitio: si la interfaz formateara coordenadas por
+    su cuenta, estaria duplicando una regla de presentacion del motor.
+    """
+    if movimiento.es_salida:
+        return "%s -> SALE" % a_coordenada_humana(movimiento.origen)
+    return "%s -> %s" % (a_coordenada_humana(movimiento.origen),
+                         a_coordenada_humana(movimiento.destino))
 
 
 def describir_movimiento(movimiento: Movimiento, jugador: str) -> str:

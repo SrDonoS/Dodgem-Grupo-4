@@ -128,6 +128,22 @@ class BotonPastel(tk.Frame):
         self._repintar()
 
 
+def _mezclar_colores(color_a: str, color_b: str, t: float) -> str:
+    """Interpola dos colores hexadecimales.
+
+    Tkinter no soporta transparencia en el Canvas, asi que para
+    representar "esta jugada es mejor que aquella" no se puede variar
+    la opacidad: hay que calcular el color intermedio a mano. `t` va de
+    0.0 (todo color_a) a 1.0 (todo color_b).
+    """
+    t = max(0.0, min(1.0, t))
+    inicio = tuple(int(color_a[i:i + 2], 16) for i in (1, 3, 5))
+    fin = tuple(int(color_b[i:i + 2], 16) for i in (1, 3, 5))
+    mezcla = tuple(int(round(a + (b - a) * t))
+                   for a, b in zip(inicio, fin))
+    return "#%02X%02X%02X" % mezcla
+
+
 def _crear_tarjeta(maestro: tk.Misc) -> tk.Frame:
     """Crea un contenedor con fondo de tarjeta y borde suave."""
     return tk.Frame(
@@ -499,8 +515,19 @@ class PantallaJuego(tk.Frame):
         # Regla de oro: SOLO el hilo de Tkinter toca widgets.
         self._cola_agente: "queue.Queue" = queue.Queue()
         self._cancelar_agente: Optional[threading.Event] = None
-        self._pensando = False
+
+        # Fase del turno del agente. Son tres y no dos porque entre
+        # "ya decidio" y "ya movio" hay un momento intermedio: el de
+        # ensenar en el tablero las jugadas que estuvo considerando.
+        #   "inactivo"  -> no le toca, o ya movio
+        #   "pensando"  -> hay un hilo buscando
+        #   "mostrando" -> termino, se ven sus candidatas, aun no mueve
+        self._fase_agente = "inactivo"
         self._fase_animacion = 0
+
+        # Jugadas que el agente evaluo en la raiz, con su puntaje.
+        # Las CALCULA el agente; aqui solo se guardan para dibujarlas.
+        self._consideraciones: Tuple[agente.JugadaEvaluada, ...] = ()
         # Identifica la partida en curso. Si el usuario reinicia
         # mientras el bot piensa, el resultado que llegue tarde traera
         # una generacion antigua y se descarta.
@@ -521,6 +548,21 @@ class PantallaJuego(tk.Frame):
     @property
     def _estado(self) -> motor.Estado:
         return self._estados[-1]
+
+    @property
+    def _pensando(self) -> bool:
+        """True mientras hay una busqueda corriendo en otro hilo."""
+        return self._fase_agente == "pensando"
+
+    @property
+    def _agente_ocupado(self) -> bool:
+        """True mientras el turno del agente no ha terminado del todo.
+
+        Incluye la pausa en la que se ensenan sus candidatas: durante
+        ese rato ya no calcula, pero todavia no ha movido y no debe
+        lanzarse una segunda busqueda.
+        """
+        return self._fase_agente != "inactivo"
 
     # -- construccion de la interfaz ---------------------------------
 
@@ -650,7 +692,17 @@ class PantallaJuego(tk.Frame):
             side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
 
     def _construir_tarjeta_agente(self, panel: tk.Frame) -> None:
-        """Tarjeta con el pensamiento del bot y sus estadisticas."""
+        """Tarjeta con el razonamiento del bot.
+
+        Contiene tres cosas: en que anda (pensando o ya decidido), las
+        estadisticas de la busqueda, y la lista de jugadas que evaluo
+        con el puntaje de cada una.
+
+        Las filas de la lista se crean UNA vez, aqui, y despues solo se
+        les cambia el texto. Crearlas y destruirlas en cada turno haria
+        parpadear el panel y reorganizaria la ventana entera en cada
+        jugada.
+        """
         paleta = config.PALETA
         tarjeta = _crear_tarjeta(panel)
         tarjeta.pack(fill=tk.X, padx=18, pady=(4, 8))
@@ -666,7 +718,48 @@ class PantallaJuego(tk.Frame):
             tarjeta, text="", bg=paleta["fondo_tarjeta"],
             fg=paleta["texto_secundario"], font=(self._familia, 9),
             justify=tk.LEFT, wraplength=config.ANCHO_PANEL_LATERAL - 70)
-        self._detalle_agente.pack(anchor=tk.W, padx=16, pady=(0, 12))
+        self._detalle_agente.pack(anchor=tk.W, padx=16, pady=(0, 8))
+
+        # --- lista de jugadas evaluadas ---
+        self._filas_razonamiento: List[Dict[str, tk.Widget]] = []
+        if not config.EXPLICAR_JUGADAS:
+            return
+
+        tk.Frame(tarjeta, bg=paleta["borde_suave"], height=1).pack(
+            fill=tk.X, padx=16, pady=(0, 6))
+
+        for _ in range(config.MAXIMO_JUGADAS_EXPLICADAS):
+            fila = tk.Frame(tarjeta, bg=paleta["fondo_tarjeta"])
+            fila.pack(fill=tk.X, padx=14, pady=1)
+
+            # Punto de color: traduce la "calidad" que calculo el
+            # agente a algo que se lee de un vistazo.
+            punto = tk.Canvas(fila, width=10, height=10,
+                              bg=paleta["fondo_tarjeta"],
+                              highlightthickness=0)
+            punto.pack(side=tk.LEFT, padx=(2, 6))
+
+            jugada = tk.Label(
+                fila, text="", bg=paleta["fondo_tarjeta"],
+                fg=paleta["texto_secundario"], font=(self._familia, 9),
+                anchor=tk.W)
+            jugada.pack(side=tk.LEFT)
+
+            puntaje = tk.Label(
+                fila, text="", bg=paleta["fondo_tarjeta"],
+                fg=paleta["texto_secundario"], font=(self._familia, 9),
+                anchor=tk.E)
+            puntaje.pack(side=tk.RIGHT, padx=(0, 4))
+
+            self._filas_razonamiento.append(
+                {"fila": fila, "punto": punto, "jugada": jugada,
+                 "puntaje": puntaje})
+
+        self._pie_razonamiento = tk.Label(
+            tarjeta, text="", bg=paleta["fondo_tarjeta"],
+            fg=paleta["texto_secundario"], font=(self._familia, 8),
+            anchor=tk.W)
+        self._pie_razonamiento.pack(anchor=tk.W, padx=16, pady=(4, 12))
 
     def _construir_marcador(self, panel: tk.Frame,
                             jugador: str) -> Dict[str, tk.Widget]:
@@ -707,27 +800,65 @@ class PantallaJuego(tk.Frame):
     # =================================================================
     # GEOMETRIA DEL TABLERO
     # =================================================================
-    # El lienzo dibuja una rejilla logica mas ancha que el tablero:
+    # El lienzo dibuja una rejilla logica MAS GRANDE que el tablero:
+    # ademas de las n x n casillas reales, reserva una fila o columna
+    # extra a cada lado por el que un jugador pueda salir.
     #
-    #   fila  -1        -> carril de salida del jugador B (arriba)
+    # En la configuracion por defecto queda asi:
+    #
+    #   fila  -1        -> carril de salida de B (avanza hacia arriba)
     #   filas 0 .. n-1  -> tablero
     #   columnas 0..n-1 -> tablero
-    #   columna n       -> carril de salida del jugador A (derecha)
+    #   columna n       -> carril de salida de A (avanza a la derecha)
+    #
+    # Pero esas posiciones NO estan escritas a mano: se deducen de
+    # config.DIRECCION_AVANCE con _carriles_de_salida(). Si el profesor
+    # invierte la direccion de un jugador en config.py, su carril se
+    # dibuja solo en el borde correcto y los clics siguen funcionando.
     #
     # Gracias a esto, la coordenada "virtual" que devuelve un
     # movimiento de salida -por ejemplo (fila, n) para A- cae
-    # exactamente sobre el carril correspondiente: no hace falta
-    # ningun caso especial para dibujar o para detectar el clic.
+    # exactamente sobre su carril: no hace falta ningun caso especial
+    # ni para dibujar ni para detectar el clic.
+
+    def _carriles_de_salida(self) -> Dict[str, Tuple[str, int]]:
+        """Donde cae el carril de salida de cada jugador.
+
+        Devuelve {jugador: ("fila"|"columna", indice)}, con el indice
+        justo fuera del tablero en la direccion de avance.
+        """
+        carriles = {}
+        for jugador in config.JUGADORES:
+            delta_fila, delta_columna = config.DIRECCION_AVANCE[jugador]
+            if delta_columna != 0:
+                indice = self._n if delta_columna > 0 else -1
+                carriles[jugador] = ("columna", indice)
+            else:
+                indice = self._n if delta_fila > 0 else -1
+                carriles[jugador] = ("fila", indice)
+        return carriles
 
     def _recalcular_geometria(self) -> None:
         ancho = self._lienzo.winfo_width()
         alto = self._lienzo.winfo_height()
         gutter = config.FRACCION_GUTTER_COORDENADAS
 
-        # Columnas dibujadas: rotulo + tablero + carril de A.
-        celdas_x = self._n + 1 + gutter
-        # Filas dibujadas: carril de B + tablero + rotulo.
-        celdas_y = self._n + 1 + gutter
+        # Limites de la rejilla dibujada: el tablero mas los carriles.
+        filas = [0, self._n - 1]
+        columnas = [0, self._n - 1]
+        for eje, indice in self._carriles_de_salida().values():
+            (filas if eje == "fila" else columnas).append(indice)
+
+        self._fila_minima = min(filas)
+        self._fila_maxima = max(filas)
+        self._columna_minima = min(columnas)
+        self._columna_maxima = max(columnas)
+
+        # Al ancho y al alto se les suma el margen donde van los
+        # numeros de fila y de columna.
+        celdas_x = (self._columna_maxima - self._columna_minima + 1
+                    + gutter)
+        celdas_y = (self._fila_maxima - self._fila_minima + 1 + gutter)
 
         disponible_x = max(1, ancho - 2 * config.MARGEN_LIENZO)
         disponible_y = max(1, alto - 2 * config.MARGEN_LIENZO)
@@ -742,8 +873,9 @@ class PantallaJuego(tk.Frame):
     def _esquina(self, fila: int, columna: int) -> Tuple[float, float]:
         """Pixel superior izquierdo de una celda logica."""
         gutter = config.FRACCION_GUTTER_COORDENADAS
-        x = self._origen_x + (columna + gutter) * self._lado
-        y = self._origen_y + (fila + 1) * self._lado
+        x = self._origen_x + (columna - self._columna_minima
+                              + gutter) * self._lado
+        y = self._origen_y + (fila - self._fila_minima) * self._lado
         return x, y
 
     def _centro(self, fila: int, columna: int) -> Tuple[float, float]:
@@ -752,11 +884,17 @@ class PantallaJuego(tk.Frame):
 
     def _casilla_desde_pixel(self, px: float,
                              py: float) -> motor.Casilla:
-        """Traduce un clic a coordenadas logicas (puede caer fuera)."""
+        """Traduce un clic a coordenadas logicas (puede caer fuera).
+
+        Es la inversa exacta de _esquina(). Que sean inversas se
+        comprueba en la verificacion recorriendo todas las casillas y
+        los carriles.
+        """
         gutter = config.FRACCION_GUTTER_COORDENADAS
         columna = math.floor((px - self._origen_x) / self._lado - gutter)
-        fila = math.floor((py - self._origen_y) / self._lado) - 1
-        return int(fila), int(columna)
+        fila = math.floor((py - self._origen_y) / self._lado)
+        return (int(fila) + self._fila_minima,
+                int(columna) + self._columna_minima)
 
     # =================================================================
     # DIBUJO
@@ -781,39 +919,45 @@ class PantallaJuego(tk.Frame):
         self._dibujar_ultima_jugada_del_bot()
         self._dibujar_marcadores_de_destino()
         self._dibujar_fichas()
+        # Va DESPUES de las fichas para que las flechas se vean por
+        # encima y no queden tapadas por las piezas.
+        self._dibujar_consideraciones()
 
         if motor.es_terminal(self._estado):
             self._dibujar_cartel_final()
 
     def _dibujar_carriles(self) -> None:
-        """Zonas de salida: franja superior (B) y derecha (A)."""
-        paleta = config.PALETA
+        """Zonas de salida de cada jugador, con sus flechas.
+
+        La posicion de cada carril se deduce de config.DIRECCION_AVANCE
+        (via _carriles_de_salida), no esta escrita a mano. Invertir el
+        avance de un jugador en config.py mueve su carril al borde
+        correcto sin tocar esta funcion.
+        """
         lado = self._lado
         radio = lado * config.FRACCION_RADIO_CELDA
 
-        # Carril del jugador B: encima de la fila 0.
-        x1, y1 = self._esquina(-1, 0)
-        x2, y2 = self._esquina(-1, self._n - 1)
-        _rectangulo_redondeado(
-            self._lienzo, x1 + 2, y1 + 2, x2 + lado - 2, y2 + lado - 2,
-            radio, fill=config.COLORES_JUGADOR[config.JUGADOR_B]["carril"],
-            outline="")
-        for columna in range(self._n):
-            cx, cy = self._centro(-1, columna)
-            self._dibujar_flecha(cx, cy, config.DIRECCION_AVANCE[
-                config.JUGADOR_B])
+        for jugador, (eje, indice) in self._carriles_de_salida().items():
+            if eje == "fila":
+                # Franja horizontal completa, encima o debajo.
+                extremos = (self._esquina(indice, 0),
+                            self._esquina(indice, self._n - 1))
+                celdas = [(indice, columna) for columna in range(self._n)]
+            else:
+                # Franja vertical completa, a izquierda o derecha.
+                extremos = (self._esquina(0, indice),
+                            self._esquina(self._n - 1, indice))
+                celdas = [(fila, indice) for fila in range(self._n)]
 
-        # Carril del jugador A: a la derecha de la columna n-1.
-        x1, y1 = self._esquina(0, self._n)
-        x2, y2 = self._esquina(self._n - 1, self._n)
-        _rectangulo_redondeado(
-            self._lienzo, x1 + 2, y1 + 2, x2 + lado - 2, y2 + lado - 2,
-            radio, fill=config.COLORES_JUGADOR[config.JUGADOR_A]["carril"],
-            outline="")
-        for fila in range(self._n):
-            cx, cy = self._centro(fila, self._n)
-            self._dibujar_flecha(cx, cy, config.DIRECCION_AVANCE[
-                config.JUGADOR_A])
+            (x1, y1), (x2, y2) = extremos
+            _rectangulo_redondeado(
+                self._lienzo, x1 + 2, y1 + 2, x2 + lado - 2, y2 + lado - 2,
+                radio, fill=config.COLORES_JUGADOR[jugador]["carril"],
+                outline="")
+            for casilla in celdas:
+                cx, cy = self._centro(*casilla)
+                self._dibujar_flecha(
+                    cx, cy, config.DIRECCION_AVANCE[jugador])
 
     def _dibujar_flecha(self, cx: float, cy: float,
                         direccion: Tuple[int, int]) -> None:
@@ -866,24 +1010,26 @@ class PantallaJuego(tk.Frame):
         """
         paleta = config.PALETA
         fuente = (self._familia, max(7, int(self._lado * 0.24)))
+        medio_margen = (self._lado
+                        * config.FRACCION_GUTTER_COORDENADAS / 2.0)
 
+        # Numeros de fila: siempre en el margen izquierdo del dibujo,
+        # que puede quedar a la izquierda de un carril de salida.
+        x_rotulos = self._esquina(0, self._columna_minima)[0] - medio_margen
         for fila in range(self._n):
-            x, _ = self._esquina(fila, 0)
             _, cy = self._centro(fila, 0)
             self._lienzo.create_text(
-                x - self._lado * config.FRACCION_GUTTER_COORDENADAS / 2.0,
-                cy, text=str(fila + 1), fill=paleta["texto_secundario"],
-                font=fuente)
+                x_rotulos, cy, text=str(fila + 1),
+                fill=paleta["texto_secundario"], font=fuente)
 
-        base_y = self._esquina(self._n - 1, 0)[1] + self._lado
+        # Numeros de columna: siempre bajo la ultima fila dibujada.
+        y_rotulos = (self._esquina(self._fila_maxima, 0)[1] + self._lado
+                     + medio_margen)
         for columna in range(self._n):
-            cx, _ = self._centro(self._n - 1, columna)
+            cx, _ = self._centro(0, columna)
             self._lienzo.create_text(
-                cx,
-                base_y + self._lado
-                * config.FRACCION_GUTTER_COORDENADAS / 2.0,
-                text=str(columna + 1), fill=paleta["texto_secundario"],
-                font=fuente)
+                cx, y_rotulos, text=str(columna + 1),
+                fill=paleta["texto_secundario"], font=fuente)
 
     def _dibujar_ultima_jugada_del_bot(self) -> None:
         """Marca de donde a donde movio el bot en su ultimo turno.
@@ -906,6 +1052,71 @@ class PantallaJuego(tk.Frame):
                 x + lado - separacion, y + lado - separacion,
                 radio, fill=paleta["resalte_jugada_bot"],
                 outline=paleta["resalte_jugada_bot_borde"], width=2)
+
+    def _dibujar_consideraciones(self) -> None:
+        """Marca las jugadas que el agente considero mejores.
+
+        Se dibuja UNA vez, cuando la busqueda ya termino, y solo para
+        las mejores config.MAXIMO_JUGADAS_RESALTADAS. Ese es el truco
+        que hace viable visualizar el razonamiento: no se renderiza ni
+        un solo nodo del arbol -serian cientos de miles y congelarian
+        la ventana- sino unicamente la RAIZ, que son unas pocas
+        jugadas.
+
+        Por cada candidata se dibuja una flecha del origen al destino y
+        un anillo en la casilla de llegada. El color y el grosor salen
+        de `calidad`, el numero que ya calculo el agente: aqui no se
+        juzga nada, solo se traduce un numero a un color.
+        """
+        if not self._consideraciones:
+            return
+
+        paleta = config.PALETA
+        lado = self._lado
+        separacion = lado * config.FRACCION_SEPARACION_CELDA
+        radio_celda = lado * config.FRACCION_RADIO_CELDA
+        visibles = list(self._consideraciones[
+            :config.MAXIMO_JUGADAS_RESALTADAS])
+
+        # De peor a mejor, para que la mejor quede dibujada encima.
+        for evaluada in reversed(visibles):
+            color = _mezclar_colores(paleta["calidad_baja"],
+                                     paleta["calidad_alta"],
+                                     evaluada.calidad)
+            grosor = 1 + 2 * evaluada.calidad
+            origen = evaluada.movimiento.origen
+            destino = evaluada.movimiento.destino
+
+            # Flecha del origen al destino. Arranca en el BORDE de la
+            # ficha, no en su centro, para que no la tape.
+            x1, y1 = self._centro(*origen)
+            x2, y2 = self._centro(*destino)
+            largo = math.hypot(x2 - x1, y2 - y1)
+            if largo > 1e-6:
+                radio_ficha = lado * config.FRACCION_DIAMETRO_FICHA / 2.0
+                avance = min(radio_ficha + separacion, largo * 0.45)
+                x1 += (x2 - x1) / largo * avance
+                y1 += (y2 - y1) / largo * avance
+            self._lienzo.create_line(
+                x1, y1, x2, y2, fill=color, width=grosor,
+                arrow=tk.LAST, arrowshape=(lado * 0.20, lado * 0.24,
+                                           lado * 0.08))
+
+            # Anillo en la casilla de llegada.
+            x, y = self._esquina(*destino)
+            _rectangulo_redondeado(
+                self._lienzo, x + separacion, y + separacion,
+                x + lado - separacion, y + lado - separacion,
+                radio_celda, fill="", outline=color, width=grosor)
+
+        # La mejor lleva ademas su puntaje escrito al lado.
+        mejor = visibles[0]
+        cx, cy = self._centro(*mejor.movimiento.destino)
+        self._lienzo.create_text(
+            cx, cy - lado * 0.34,
+            text=self._formatear_puntaje(mejor.valor),
+            fill=paleta["texto_principal"],
+            font=(self._familia, max(7, int(lado * 0.2)), "bold"))
 
     def _dibujar_marcadores_de_destino(self) -> None:
         """Resalta las casillas legales de la ficha seleccionada."""
@@ -1090,13 +1301,13 @@ class PantallaJuego(tk.Frame):
         jugador controlado por la maquina, y que no haya ya una
         busqueda en marcha.
         """
-        if self._pensando or motor.es_terminal(self._estado):
+        if self._agente_ocupado or motor.es_terminal(self._estado):
             return
         cerebro = self._agentes.get(self._estado.turno)
         if cerebro is None:
             return
 
-        self._pensando = True
+        self._fase_agente = "pensando"
         self._fase_animacion = 0
         self._cancelar_agente = threading.Event()
 
@@ -1145,20 +1356,48 @@ class PantallaJuego(tk.Frame):
                        self._sondear_agente)
             return
 
-        self._pensando = False
-
         # Resultado de una partida anterior (el usuario reinicio o
         # deshizo mientras el bot pensaba): se descarta.
         if generacion != self._generacion:
+            self._fase_agente = "inactivo"
             return
 
         if error is not None:
+            self._fase_agente = "inactivo"
             self._etiqueta_mensaje.configure(
                 text="El agente fallo: %s" % error,
                 fg=config.PALETA["aviso_error"])
             return
 
+        # Ya decidio, pero todavia no mueve: primero se ensena lo que
+        # estuvo considerando. Es la unica forma de que el usuario vea
+        # el razonamiento; si moviera de inmediato, la informacion
+        # aparecería y desapareceria en el mismo fotograma.
+        self._fase_agente = "mostrando"
         self._ultimo_resultado_agente = resultado
+        self._consideraciones = resultado.evaluaciones
+        self._refrescar_panel_agente()
+        self._dibujar()
+
+        hay_que_ensenar = (config.RESALTAR_JUGADAS_CONSIDERADAS
+                           and bool(resultado.evaluaciones))
+        espera = config.MS_RESALTE_CONSIDERACION if hay_que_ensenar else 0
+        self.after(espera,
+                   lambda: self._confirmar_jugada_del_agente(resultado,
+                                                             generacion))
+
+    def _confirmar_jugada_del_agente(self, resultado, generacion) -> None:
+        """Ejecuta la jugada despues de la pausa de revelacion.
+
+        Vuelve a comprobar la generacion: durante esos milisegundos el
+        usuario pudo reiniciar o pedir un tablero nuevo.
+        """
+        if generacion != self._generacion:
+            return
+        if self._fase_agente != "mostrando":
+            return
+        self._fase_agente = "inactivo"
+        self._consideraciones = ()
         self._ultima_jugada_agente = resultado.movimiento
         self._jugar(resultado.movimiento)
 
@@ -1173,7 +1412,8 @@ class PantallaJuego(tk.Frame):
         self._generacion += 1
         if self._cancelar_agente is not None:
             self._cancelar_agente.set()
-        self._pensando = False
+        self._fase_agente = "inactivo"
+        self._consideraciones = ()
         self._ultima_jugada_agente = None
 
     # -- botones -----------------------------------------------------
@@ -1338,8 +1578,9 @@ class PantallaJuego(tk.Frame):
                 resultado.valor,)
 
         self._titulo_agente.configure(
-            text="Bot (%s)  ·  %.2f s" % (self._nivel.capitalize(),
-                                          resultado.segundos))
+            text="%sBot (%s)  ·  %.2f s"
+                 % (config.PREFIJO_PENSANDO, self._nivel.capitalize(),
+                    resultado.segundos))
         self._detalle_agente.configure(
             text="%s\nProfundidad %d%s  ·  %s nodos  ·  %s podas\n"
                  "%s aciertos de tabla"
@@ -1349,18 +1590,107 @@ class PantallaJuego(tk.Frame):
                     "{:,}".format(resultado.podas).replace(",", " "),
                     "{:,}".format(resultado.aciertos_tabla).replace(",",
                                                                     " ")))
+        self._refrescar_lista_razonamiento(resultado.evaluaciones)
+
+    def _refrescar_lista_razonamiento(self, evaluaciones) -> None:
+        """Vuelca en el panel las jugadas evaluadas y su puntaje.
+
+        Esta funcion NO decide nada sobre el juego: recibe una lista ya
+        ordenada y ya puntuada por el agente, y se limita a escribir
+        texto y elegir colores. La regla de la arquitectura se
+        mantiene: la interfaz no sabe jugar al Dodgem.
+        """
+        if not self._filas_razonamiento:
+            return
+        paleta = config.PALETA
+        mostradas = evaluaciones[:len(self._filas_razonamiento)]
+
+        for indice, widgets in enumerate(self._filas_razonamiento):
+            if indice < len(mostradas):
+                evaluada = mostradas[indice]
+                # El fondo destaca la jugada que finalmente se juega.
+                fondo = (paleta["fila_elegida"] if evaluada.elegida
+                         else paleta["fondo_tarjeta"])
+                color_valor = (paleta["texto_valor_positivo"]
+                               if evaluada.valor >= 0
+                               else paleta["texto_valor_negativo"])
+                texto_valor = self._formatear_puntaje(evaluada.valor)
+                if evaluada.elegida:
+                    texto_valor += "  ✓"
+
+                widgets["fila"].configure(bg=fondo)
+                widgets["jugada"].configure(
+                    text=evaluada.etiqueta, bg=fondo,
+                    fg=(paleta["texto_principal"] if evaluada.elegida
+                        else paleta["texto_secundario"]),
+                    font=(self._familia, 9,
+                          "bold" if evaluada.elegida else "normal"))
+                widgets["puntaje"].configure(
+                    text=texto_valor, bg=fondo, fg=color_valor,
+                    font=(self._familia, 9,
+                          "bold" if evaluada.elegida else "normal"))
+                self._pintar_punto_de_calidad(widgets["punto"], fondo,
+                                              evaluada.calidad)
+            else:
+                fondo = paleta["fondo_tarjeta"]
+                widgets["fila"].configure(bg=fondo)
+                widgets["jugada"].configure(text="", bg=fondo)
+                widgets["puntaje"].configure(text="", bg=fondo)
+                widgets["punto"].delete(tk.ALL)
+                widgets["punto"].configure(bg=fondo)
+
+        restantes = len(evaluaciones) - len(mostradas)
+        if restantes > 0:
+            self._pie_razonamiento.configure(
+                text="y %d jugada%s mas evaluada%s"
+                     % (restantes, "s" if restantes > 1 else "",
+                        "s" if restantes > 1 else ""))
+        elif evaluaciones:
+            self._pie_razonamiento.configure(
+                text="%d jugadas evaluadas en total" % len(evaluaciones))
+        else:
+            self._pie_razonamiento.configure(text="")
+
+    @staticmethod
+    def _formatear_puntaje(valor: float) -> str:
+        """Puntaje listo para mostrar, con las victorias en palabras."""
+        if valor >= config.UMBRAL_VICTORIA:
+            return "GANA"
+        if valor <= -config.UMBRAL_VICTORIA:
+            return "PIERDE"
+        return "%+.1f" % valor
+
+    def _pintar_punto_de_calidad(self, lienzo: tk.Canvas, fondo: str,
+                                 calidad: float) -> None:
+        """Circulito de color segun lo buena que sea la jugada."""
+        lienzo.delete(tk.ALL)
+        lienzo.configure(bg=fondo)
+        color = _mezclar_colores(config.PALETA["calidad_baja"],
+                                 config.PALETA["calidad_alta"], calidad)
+        lienzo.create_oval(1, 1, 9, 9, fill=color, outline="")
 
     def _actualizar_indicador_pensando(self) -> None:
-        """Anima los puntos suspensivos mientras el agente calcula."""
+        """Anima el indicador mientras el agente calcula.
+
+        Su unico trabajo es que el usuario sepa que el programa no se
+        colgo. La animacion la mueve el sondeo de la cola, que ya
+        ocurre cada 50 ms, asi que no cuesta un temporizador aparte.
+        """
         if self._tarjeta_agente is None:
             return
         puntos = "." * (1 + self._fase_animacion // 4 % 3)
+        ajustes = config.NIVELES[self._nivel]
         self._titulo_agente.configure(
-            text="Bot (%s) pensando%s" % (self._nivel.capitalize(), puntos))
+            text="%sAgente calculando%s"
+                 % (config.PREFIJO_PENSANDO, puntos))
         self._detalle_agente.configure(
-            text="Profundidad objetivo %d, tope de %.0f s."
-                 % (config.NIVELES[self._nivel]["profundidad"],
-                    config.NIVELES[self._nivel]["segundos"]))
+            text="Nivel %s: explora %d jugadas de anticipacion.\n"
+                 "Tope de seguridad: %.0f s."
+                 % (self._nivel, ajustes["profundidad"],
+                    ajustes["segundos"]))
+        # Se limpia la tabla del turno anterior: dejarla puesta
+        # mientras piensa haria creer que esos numeros son los nuevos.
+        self._refrescar_lista_razonamiento(())
 
     def _dibujar_barra_progreso(self, barra: tk.Canvas, jugador: str,
                                 fuera: int, total: int) -> None:

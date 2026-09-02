@@ -97,6 +97,49 @@ def medir_factor_de_ramificacion(n):
 
 
 # =====================================================================
+# 2bis. COSTE DE MOSTRAR EL RAZONAMIENTO
+# =====================================================================
+
+
+def medir_coste_de_explicar():
+    """Cuanto cuesta que los puntajes mostrados sean EXACTOS.
+
+    Para poder ensenar el puntaje de cada jugada de la raiz hay que
+    buscarlas todas con la ventana completa, es decir renunciar a la
+    poda entre hermanos de la raiz. Este es el precio de esa decision.
+    """
+    print("   %-9s %-4s %11s %11s %8s" %
+          ("nivel", "n", "sin panel", "con panel", "factor"))
+    print("   " + "-" * 50)
+    for nivel in ("facil", "medio", "dificil"):
+        for n in (6, 10):
+            columnas = []
+            for explicar in (False, True):
+                azar = random.Random(11)
+                estado = motor.estado_inicial(n)
+                posiciones = []
+                while len(posiciones) < 10 and not motor.es_terminal(estado):
+                    posiciones.append(estado)
+                    estado = motor.aplicar(
+                        estado,
+                        azar.choice(motor.movimientos_legales(estado)),
+                        validar=False)
+                total = 0
+                for posicion in posiciones:
+                    cerebro = agente.AgenteMinimax(
+                        posicion.turno, nivel, segundos=None,
+                        explicar=explicar)
+                    total += cerebro.elegir(posicion).nodos
+                columnas.append(total / float(len(posiciones)))
+            print("   %-9s %-4d %11s %11s %7.2fx"
+                  % (nivel, n, formatear(columnas[0]),
+                     formatear(columnas[1]),
+                     columnas[1] / max(1.0, columnas[0])))
+    print("   Poner config.EXPLICAR_JUGADAS = False devuelve la")
+    print("   columna izquierda, a costa de quedarse sin desglose.")
+
+
+# =====================================================================
 # 3. TIEMPO POR JUGADA
 # =====================================================================
 
@@ -233,6 +276,10 @@ def main(argumentos=None):
     print("\n2. RAMIFICACION")
     print("-" * 66)
     medir_factor_de_ramificacion(n)
+
+    print("\n2bis. COSTE DE LOS PUNTAJES EXACTOS DEL PANEL")
+    print("-" * 66)
+    medir_coste_de_explicar()
 
     print("\n3. TIEMPO POR JUGADA")
     print("-" * 66)

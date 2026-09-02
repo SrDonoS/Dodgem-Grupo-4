@@ -125,6 +125,133 @@ class PruebasNormalizacionDePuntajes(unittest.TestCase):
 
 
 # =====================================================================
+# EXPLICACION DEL RAZONAMIENTO
+# =====================================================================
+
+
+class PruebasExplicacion(unittest.TestCase):
+    """Los puntajes que se muestran en pantalla deben ser CIERTOS."""
+
+    def test_los_puntajes_mostrados_son_exactos(self):
+        """El nucleo de todo: cada valor de la lista debe coincidir
+        con el Minimax puro de esa jugada.
+
+        Sin esta prueba, la tabla del panel podria estar publicando
+        cotas de la poda en lugar de puntajes reales, que es
+        exactamente el error que la opcion `explicar` existe para
+        evitar. Se compara jugada por jugada contra la
+        implementacion de referencia.
+        """
+        for estado in posiciones_de_prueba(6, (0, 1, 2)):
+            for profundidad in (1, 2, 3):
+                cerebro = agente.AgenteMinimax(
+                    estado.turno, profundidad=profundidad, segundos=None,
+                    explicar=True)
+                resultado = cerebro.elegir(estado)
+
+                for evaluada in resultado.evaluaciones:
+                    hijo = motor.aplicar(estado, evaluada.movimiento,
+                                         validar=False)
+                    referencia = agente.minimax_sin_poda(
+                        hijo, profundidad - 1, estado.turno, 1)
+                    self.assertAlmostEqual(
+                        evaluada.valor, referencia, places=6,
+                        msg="puntaje inexacto en %s (prof %d)"
+                            % (evaluada.etiqueta, profundidad))
+
+    def test_estan_todas_las_jugadas_legales(self):
+        for estado in posiciones_de_prueba(6, (3, 4)):
+            cerebro = agente.AgenteMinimax(estado.turno, profundidad=2,
+                                           segundos=None, explicar=True)
+            resultado = cerebro.elegir(estado)
+            legales = set(motor.movimientos_legales(estado))
+            listadas = {e.movimiento for e in resultado.evaluaciones}
+            self.assertEqual(listadas, legales)
+
+    def test_exactamente_una_marcada_como_elegida(self):
+        for estado in posiciones_de_prueba(6, (5,)):
+            cerebro = agente.AgenteMinimax(estado.turno, profundidad=3,
+                                           segundos=None, explicar=True)
+            resultado = cerebro.elegir(estado)
+            elegidas = [e for e in resultado.evaluaciones if e.elegida]
+            self.assertEqual(len(elegidas), 1)
+            self.assertEqual(elegidas[0].movimiento, resultado.movimiento)
+
+    def test_la_elegida_es_la_primera_de_la_lista(self):
+        # La lista viene ordenada de mejor a peor PARA EL AGENTE.
+        for estado in posiciones_de_prueba(6, (6, 7)):
+            cerebro = agente.AgenteMinimax(estado.turno, profundidad=3,
+                                           segundos=None, explicar=True)
+            resultado = cerebro.elegir(estado)
+            self.assertTrue(resultado.evaluaciones[0].elegida)
+
+    def test_la_calidad_esta_normalizada(self):
+        for estado in posiciones_de_prueba(6, (8,)):
+            cerebro = agente.AgenteMinimax(estado.turno, profundidad=2,
+                                           segundos=None, explicar=True)
+            resultado = cerebro.elegir(estado)
+            calidades = [e.calidad for e in resultado.evaluaciones]
+            for calidad in calidades:
+                self.assertGreaterEqual(calidad, 0.0)
+                self.assertLessEqual(calidad, 1.0)
+            self.assertAlmostEqual(max(calidades), 1.0, places=9)
+
+    def test_el_orden_respeta_el_punto_de_vista_del_agente(self):
+        """Si el agente mueve como MIN, su mejor jugada es la de MENOR
+        puntaje. La lista debe reflejarlo."""
+        estado = motor.estado_inicial(6)
+        # El agente controla a B, pero mueve A: en la raiz el agente es
+        # MIN, asi que prefiere los valores bajos.
+        estado_de_b = estado._replace(turno=config.JUGADOR_A)
+        cerebro = agente.AgenteMinimax(config.JUGADOR_B, profundidad=2,
+                                       segundos=None, explicar=True)
+        resultado = cerebro.elegir(estado_de_b)
+        valores = [e.valor for e in resultado.evaluaciones]
+        self.assertEqual(valores, sorted(valores),
+                         "como MIN, la lista debe ir de menor a mayor")
+
+    def test_explicar_desactivado_no_devuelve_lista(self):
+        estado = motor.estado_inicial(6)
+        cerebro = agente.AgenteMinimax(config.JUGADOR_A, profundidad=3,
+                                       segundos=None, explicar=False)
+        self.assertEqual(cerebro.elegir(estado).evaluaciones, ())
+
+    def test_explicar_no_cambia_la_jugada_elegida(self):
+        # La explicacion cuesta nodos, pero no debe alterar QUE juega
+        # el agente: el valor de la mejor jugada es el mismo.
+        for estado in posiciones_de_prueba(6, (9, 10)):
+            con = agente.AgenteMinimax(estado.turno, profundidad=3,
+                                       segundos=None, explicar=True)
+            sin = agente.AgenteMinimax(estado.turno, profundidad=3,
+                                       segundos=None, explicar=False)
+            self.assertAlmostEqual(con.elegir(estado).valor,
+                                   sin.elegir(estado).valor, places=6)
+
+    def test_el_texto_de_una_fila_es_legible(self):
+        estado = motor.estado_inicial(6)
+        cerebro = agente.AgenteMinimax(config.JUGADOR_A, profundidad=2,
+                                       segundos=None, explicar=True)
+        primera = cerebro.elegir(estado).evaluaciones[0]
+        texto = primera.texto()
+        self.assertIn("->", texto)
+        self.assertIn("(Elegida)", texto)
+        self.assertIn("pts", texto)
+
+    def test_las_salidas_se_etiquetan_como_SALE(self):
+        n = 6
+        estado = motor.Estado(
+            n=n, fichas_a=frozenset({(2, n - 1)}),
+            fichas_b=frozenset({(4, 1), (4, 2)}),
+            turno=config.JUGADOR_A, salidas_a=n - 3, salidas_b=0,
+            sin_progreso=0)
+        cerebro = agente.AgenteMinimax(config.JUGADOR_A, profundidad=2,
+                                       segundos=None, explicar=True)
+        etiquetas = [e.etiqueta
+                     for e in cerebro.elegir(estado).evaluaciones]
+        self.assertTrue(any("SALE" in etiqueta for etiqueta in etiquetas))
+
+
+# =====================================================================
 # LA OPTIMIZACION SIRVE
 # =====================================================================
 

@@ -466,3 +466,68 @@ PALETA.update({
     "resalte_jugada_bot_borde": "#E2BE72",
     "pensando": "#C9B7E4",
 })
+
+
+# ---------------------------------------------------------------------
+# 10. VISUALIZACION DEL RAZONAMIENTO DEL AGENTE
+# ---------------------------------------------------------------------
+# El objetivo es que se vea COMO decide el agente sin renderizar cada
+# nodo del arbol (eso congelaria la ventana y, con cientos de miles de
+# nodos, seria ademas ilegible).
+#
+# La solucion es mostrar solo la RAIZ del arbol: las jugadas que el
+# agente tenia disponibles este turno y el puntaje que le dio a cada
+# una. Son entre 5 y 45 filas, no cientos de miles, y se dibujan UNA
+# vez cuando la busqueda ya termino.
+
+#: Si es True, el agente devuelve el puntaje de CADA jugada legal de la
+#: raiz, no solo el de la elegida.
+#:
+#: CUIDADO, ESTO NO ES GRATIS. Con poda Alfa-Beta, el valor de las
+#: jugadas que no son la mejor NO es exacto: la poda corta en cuanto
+#: sabe que una jugada es peor que otra ya conocida, y devuelve una
+#: COTA en lugar del valor real. Mostrar esas cotas como si fueran
+#: puntajes seria enganoso.
+#:
+#: Por eso, cuando esta opcion esta activa, la busqueda de la raiz
+#: renuncia a podar ENTRE HERMANOS: cada jugada de la raiz se explora
+#: con la ventana completa (-inf, +inf), que es la condicion que
+#: garantiza un valor exacto. Dentro de cada rama la poda sigue
+#: funcionando con normalidad.
+#:
+#: Coste medido en banco_agente.py. Si en la evaluacion se quiere
+#: maxima velocidad, basta con poner esto en False.
+EXPLICAR_JUGADAS = True
+
+#: Cuantas jugadas se listan en el panel lateral. El resto se resume
+#: en una linea final ("y N jugadas mas").
+MAXIMO_JUGADAS_EXPLICADAS = 7
+
+#: Si es True, ademas de la lista se marcan en el tablero las jugadas
+#: que el agente considero mejores, justo antes de mover.
+RESALTAR_JUGADAS_CONSIDERADAS = True
+
+#: Cuantas jugadas se marcan sobre el tablero.
+MAXIMO_JUGADAS_RESALTADAS = 4
+
+#: Milisegundos que se muestran esas marcas antes de ejecutar la
+#: jugada definitiva. Es la pausa que convierte la busqueda en algo
+#: observable: sin ella el bot movería antes de que el ojo lo siga.
+MS_RESALTE_CONSIDERACION = 900
+
+#: Prefijo del indicador de "pensando".
+#: NOTA: no todos los sistemas renderizan emoji en widgets de Tkinter.
+#: En Windows y macOS se ve bien; en algunas distribuciones de Linux
+#: sin fuente de emoji instalada aparece un recuadro. Si eso pasa,
+#: basta con dejarlo en cadena vacia.
+PREFIJO_PENSANDO = "\U0001F916 "        # robot
+
+#: Colores del panel de razonamiento y de las marcas del tablero.
+PALETA.update({
+    # Escala de calidad: de la mejor jugada a la peor.
+    "calidad_alta": "#8FCBA5",
+    "calidad_baja": "#D8CEC6",
+    "fila_elegida": "#EAF6EF",
+    "texto_valor_positivo": "#5C8F73",
+    "texto_valor_negativo": "#C08A8A",
+})

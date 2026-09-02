@@ -72,7 +72,7 @@ deshace la conversion. Los puntajes heuristicos normales no se tocan.
 from __future__ import annotations
 
 import time
-from typing import Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import config
 import heuristica
@@ -99,6 +99,45 @@ class Entrada(NamedTuple):
     mejor: Optional[motor.Movimiento]   # Para ordenar en el futuro.
 
 
+class JugadaEvaluada(NamedTuple):
+    """El veredicto del agente sobre UNA jugada de la raiz.
+
+    Es la unidad de informacion que hace visible el razonamiento: por
+    cada jugada que el agente podia hacer este turno, que puntaje le
+    dio y como se compara con las demas.
+
+    Atributos:
+        movimiento: la jugada.
+        valor:      su puntaje Minimax EXACTO, en la misma escala que
+                    la heuristica (1 punto = 1 paso de avance).
+        elegida:    True solo en la jugada que finalmente se juega.
+        calidad:    posicion relativa dentro de este turno, de 0.0 (la
+                    peor de las disponibles) a 1.0 (la mejor). Si todas
+                    empatan, vale 1.0 para todas.
+
+                    Se calcula AQUI y no en la interfaz a proposito:
+                    decidir que jugada es "buena" es un juicio sobre el
+                    juego, no una decision de presentacion. La interfaz
+                    solo traduce ese numero a un color.
+        etiqueta:   notacion breve lista para mostrar ("f1c1 -> f1c2").
+    """
+
+    movimiento: motor.Movimiento
+    valor: float
+    elegida: bool
+    calidad: float
+    etiqueta: str
+
+    def texto(self) -> str:
+        """Fila completa tal como se lee en el panel."""
+        if abs(self.valor) >= config.UMBRAL_VICTORIA:
+            puntaje = "GANA" if self.valor > 0 else "PIERDE"
+        else:
+            puntaje = "%+.1f pts" % self.valor
+        marca = "  (Elegida)" if self.elegida else ""
+        return "%s: %s%s" % (self.etiqueta, puntaje, marca)
+
+
 class Resultado(NamedTuple):
     """Lo que devuelve el agente: la jugada y como llego a ella."""
 
@@ -110,6 +149,10 @@ class Resultado(NamedTuple):
     aciertos_tabla: int
     segundos: float
     completa: bool            # False si el tope de tiempo la corto.
+    #: Todas las jugadas de la raiz con su puntaje, ordenadas de mejor
+    #: a peor desde el punto de vista del agente. Vacia si el agente
+    #: se creo con explicar=False.
+    evaluaciones: Tuple[JugadaEvaluada, ...] = ()
 
     def resumen(self) -> str:
         """Linea legible para mostrar en la interfaz."""
@@ -160,13 +203,22 @@ class _Buscador(object):
     """
 
     def __init__(self, jugador_max, tabla, limite_tiempo=None,
-                 cancelar=None, usar_tabla=True, usar_poda=True):
+                 cancelar=None, usar_tabla=True, usar_poda=True,
+                 cortes_solo_exactos=False):
         self.jugador_max = jugador_max
         self.tabla = tabla
         self.limite_tiempo = limite_tiempo
         self.cancelar = cancelar
         self.usar_tabla = usar_tabla
         self.usar_poda = usar_poda
+        # Cuando se necesitan puntajes EXACTOS para mostrarlos, la
+        # tabla solo puede usarse para cortar si su entrada es EXACTA.
+        # Una entrada de tipo COTA dice "el valor real es >= x" o
+        # "<= x", y reutilizarla estrecharia la ventana de busqueda:
+        # el valor que saldria seria una cota valida, pero no el
+        # numero que queremos ensenar en pantalla. Las entradas de
+        # cota se siguen usando para ORDENAR, que es gratis y seguro.
+        self.cortes_solo_exactos = cortes_solo_exactos
 
         self.nodos = 0
         self.podas = 0
@@ -238,13 +290,14 @@ class _Buscador(object):
                     if entrada.bandera == EXACTO:
                         self.aciertos_tabla += 1
                         return valor
-                    if entrada.bandera == COTA_INFERIOR:
-                        alfa = max(alfa, valor)
-                    else:
-                        beta = min(beta, valor)
-                    if alfa >= beta:
-                        self.aciertos_tabla += 1
-                        return valor
+                    if not self.cortes_solo_exactos:
+                        if entrada.bandera == COTA_INFERIOR:
+                            alfa = max(alfa, valor)
+                        else:
+                            beta = min(beta, valor)
+                        if alfa >= beta:
+                            self.aciertos_tabla += 1
+                            return valor
 
         # --- hoja: terminal o corte de profundidad -------------------
         # ganador() se calcula UNA vez y se le pasa a evaluar(), que si
@@ -319,11 +372,35 @@ class _Buscador(object):
     # -- raiz ---------------------------------------------------------
 
     def buscar_raiz(self, estado: motor.Estado, profundidad: int,
-                    preferido: Optional[motor.Movimiento] = None):
-        """Explora la raiz y devuelve (valor, mejor movimiento).
+                    preferido: Optional[motor.Movimiento] = None,
+                    explicar: bool = False):
+        """Explora la raiz. Devuelve (valor, mejor jugada, puntajes).
 
-        La raiz se trata aparte porque aqui si importa CUAL es la mejor
-        jugada, no solo su valor.
+        La raiz se trata aparte por dos motivos. El primero es obvio:
+        aqui si importa CUAL es la mejor jugada, no solo su valor. El
+        segundo tiene que ver con poder ensenar el razonamiento.
+
+        POR QUE `explicar` CAMBIA LA BUSQUEDA
+        -------------------------------------
+        En Alfa-Beta normal, la ventana de cada hermano se estrecha con
+        lo que ya se sabe: si la jugada 1 vale 4, la jugada 2 se busca
+        con alfa = 4, y en cuanto se demuestra que no llega a 4, se
+        corta. Eso es exactamente lo que hace rapida a la poda... pero
+        significa que el numero que devuelve la jugada 2 NO es su
+        puntaje: es solo "algo <= 4". Publicar esa cifra en pantalla
+        como "el puntaje de la jugada 2" seria mentir.
+
+        Con explicar=True cada jugada de la raiz se busca con la
+        ventana COMPLETA (-inf, +inf). Un nodo explorado con ventana
+        completa no puede fallar ni por arriba ni por abajo, asi que su
+        valor es el verdadero valor Minimax. Se pierde el ahorro de
+        podar ENTRE hermanos -solo ahi, la poda dentro de cada rama
+        sigue intacta- y a cambio la tabla que ve el usuario es cierta.
+
+        La lista devuelta viene ordenada de mejor a peor DESDE EL PUNTO
+        DE VISTA DEL AGENTE, que no es lo mismo que de mayor a menor
+        valor: si el agente juega de MIN en este nodo, su mejor jugada
+        es la de menor puntaje.
         """
         movimientos = self._ordenar(motor.movimientos_legales(estado),
                                     preferido)
@@ -331,10 +408,17 @@ class _Buscador(object):
         alfa, beta = -INFINITO, INFINITO
         mejor_valor = -INFINITO if maximizando else INFINITO
         mejor_movimiento = movimientos[0]
+        puntajes: List[Tuple[motor.Movimiento, float]] = []
 
         for movimiento in movimientos:
             hijo = motor.aplicar(estado, movimiento, validar=False)
-            valor = self._alfa_beta(hijo, profundidad - 1, alfa, beta, 1)
+            if explicar:
+                valor = self._alfa_beta(hijo, profundidad - 1,
+                                        -INFINITO, INFINITO, 1)
+                puntajes.append((movimiento, valor))
+            else:
+                valor = self._alfa_beta(hijo, profundidad - 1,
+                                        alfa, beta, 1)
             if maximizando:
                 if valor > mejor_valor:
                     mejor_valor, mejor_movimiento = valor, movimiento
@@ -348,7 +432,55 @@ class _Buscador(object):
             self._guardar(estado, profundidad,
                           _hacia_la_tabla(mejor_valor, 0), EXACTO,
                           mejor_movimiento)
-        return mejor_valor, mejor_movimiento
+
+        evaluaciones = _construir_evaluaciones(puntajes, mejor_movimiento,
+                                               maximizando)
+        return mejor_valor, mejor_movimiento, evaluaciones
+
+
+def _construir_evaluaciones(puntajes, elegida, maximizando):
+    """Ordena los puntajes de la raiz y les asigna una calidad.
+
+    `calidad` normaliza el puntaje al intervalo [0, 1] dentro de este
+    turno: 1.0 es la mejor jugada disponible y 0.0 la peor. Sirve para
+    que la interfaz pueda colorear sin tener que saber nada del juego
+    -solo mapea un numero a un color-.
+
+    Se normaliza por turno y no en una escala absoluta porque lo que
+    interesa mostrar es la comparacion entre las opciones de AHORA. En
+    una posicion donde todas las jugadas son malas, la "menos mala"
+    sigue siendo la que el agente elige y merece destacarse.
+    """
+    if not puntajes:
+        return ()
+
+    valores = [valor for _, valor in puntajes]
+    mejor = max(valores) if maximizando else min(valores)
+    peor = min(valores) if maximizando else max(valores)
+    rango = abs(mejor - peor)
+
+    evaluadas = []
+    for movimiento, valor in puntajes:
+        if rango < 1e-9:
+            calidad = 1.0          # Todas empatan.
+        else:
+            calidad = abs(valor - peor) / rango
+        evaluadas.append(JugadaEvaluada(
+            movimiento=movimiento,
+            valor=valor,
+            elegida=movimiento == elegida,
+            calidad=calidad,
+            etiqueta=motor.etiqueta_corta_de_movimiento(movimiento),
+        ))
+
+    # De mejor a peor para el agente. Los desempates, en orden:
+    #   1. la jugada elegida va primera entre las que empatan, porque
+    #      es confuso leer una lista donde la marcada "(Elegida)" no
+    #      encabeza el grupo de las mejores;
+    #   2. luego por etiqueta, para que el orden sea estable y la
+    #      misma posicion produzca siempre la misma tabla.
+    evaluadas.sort(key=lambda e: (-e.calidad, not e.elegida, e.etiqueta))
+    return tuple(evaluadas)
 
 
 # =====================================================================
@@ -361,7 +493,8 @@ class AgenteMinimax(object):
 
     def __init__(self, jugador: str, nivel: Optional[str] = None,
                  profundidad: Optional[int] = None,
-                 segundos: Optional[float] = None):
+                 segundos: Optional[float] = None,
+                 explicar: Optional[bool] = None):
         """Configura el agente.
 
         Argumentos:
@@ -371,12 +504,18 @@ class AgenteMinimax(object):
             nivel:       clave de config.NIVELES.
             profundidad: sobrescribe la del nivel.
             segundos:    sobrescribe el tope del nivel. None = sin tope.
+            explicar:    si es True, el Resultado incluye el puntaje
+                         exacto de TODAS las jugadas de la raiz, a
+                         cambio de renunciar a la poda entre hermanos
+                         de la raiz. None = usar config.EXPLICAR_JUGADAS.
         """
         ajustes = config.NIVELES[nivel or config.NIVEL_POR_DEFECTO]
         self.jugador = jugador
         self.nivel = nivel or config.NIVEL_POR_DEFECTO
         self.profundidad = profundidad or ajustes["profundidad"]
         self.segundos = ajustes["segundos"] if segundos is None else segundos
+        self.explicar = (config.EXPLICAR_JUGADAS if explicar is None
+                         else explicar)
         self.tabla: Dict[motor.Estado, Entrada] = {}
         self.ultimo_resultado: Optional[Resultado] = None
 
@@ -412,29 +551,49 @@ class AgenteMinimax(object):
         comienzo = time.monotonic()
         limite = None if not self.segundos else comienzo + self.segundos
 
-        buscador = _Buscador(self.jugador, self.tabla, limite, cancelar)
+        # Con explicar activo, la tabla solo puede cortar con entradas
+        # EXACTAS (ver _Buscador). No es solo una precaucion: como cada
+        # jugada de la raiz se busca con ventana completa, esas
+        # busquedas GENERAN entradas exactas, que las iteraciones
+        # siguientes si pueden reutilizar. La restriccion se paga sola.
+        buscador = _Buscador(self.jugador, self.tabla, limite, cancelar,
+                             cortes_solo_exactos=self.explicar)
         movimientos = motor.movimientos_legales(estado)
 
         mejor_movimiento = movimientos[0]
         mejor_valor = 0.0
         profundidad_lograda = 0
         completa = True
+        evaluaciones: Tuple[JugadaEvaluada, ...] = ()
 
         for profundidad in range(1, self.profundidad + 1):
             try:
-                valor, movimiento = buscador.buscar_raiz(
-                    estado, profundidad, mejor_movimiento)
+                valor, movimiento, puntajes = buscador.buscar_raiz(
+                    estado, profundidad, mejor_movimiento, self.explicar)
             except _BusquedaInterrumpida:
                 completa = False
                 break
 
             mejor_valor, mejor_movimiento = valor, movimiento
             profundidad_lograda = profundidad
+            # Se conservan los puntajes de la ULTIMA iteracion completa.
+            # Los de una iteracion interrumpida solo cubririan las
+            # primeras jugadas y darian una tabla enganosa.
+            evaluaciones = puntajes
 
             # Si ya se demostro una victoria o una derrota forzada, no
             # hay nada que ganar mirando mas hondo.
             if abs(valor) >= config.UMBRAL_VICTORIA:
                 break
+
+        # NOTA SOBRE UNA OPTIMIZACION QUE NO FUNCIONO.
+        # Parece mas barato buscar normal en todas las iteraciones y
+        # hacer UNA sola pasada explicativa al final, con la tabla ya
+        # caliente. Se probo y sale entre un 8% y un 11% PEOR. El
+        # motivo: las iteraciones rapidas llenan la tabla de entradas
+        # de tipo COTA, que la pasada exacta tiene que rechazar, asi
+        # que se queda sin tabla util justo cuando mas la necesita.
+        # Explicar desde el principio la llena de entradas EXACTAS.
 
         self.ultimo_resultado = Resultado(
             movimiento=mejor_movimiento,
@@ -445,6 +604,7 @@ class AgenteMinimax(object):
             aciertos_tabla=buscador.aciertos_tabla,
             segundos=time.monotonic() - comienzo,
             completa=completa,
+            evaluaciones=evaluaciones,
         )
         return self.ultimo_resultado
 

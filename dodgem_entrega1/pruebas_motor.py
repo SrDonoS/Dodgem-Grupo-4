@@ -375,6 +375,49 @@ class PruebasParametrizacion(unittest.TestCase):
             columnas = {columna for _, columna in estado.fichas_a}
             self.assertEqual(columnas, {5})
 
+    def test_se_puede_repartir_otra_cantidad_de_fichas(self):
+        # El profesor puede pedir "n-3 fichas por jugador" en vivo. El
+        # reparto real tiene que seguir a la constante, no solo el
+        # texto del marcador.
+        with mock.patch.object(config, "FICHAS_MENOS_QUE_LADO", 3):
+            estado = motor.estado_inicial(6)
+            self.assertEqual(len(estado.fichas_a), 3)
+            self.assertEqual(len(estado.fichas_b), 3)
+            self.assertEqual(len(estado.fichas_a),
+                             motor.fichas_por_jugador(6))
+            # Las que se quitan son las mas cercanas a la esquina
+            # compartida (5, 0): quedan las filas 0, 1 y 2.
+            self.assertEqual(set(estado.fichas_a), {(0, 0), (1, 0), (2, 0)})
+
+    def test_avisa_si_se_piden_mas_fichas_de_las_que_caben(self):
+        with mock.patch.object(config, "FICHAS_MENOS_QUE_LADO", 0):
+            with self.assertRaises(ValueError):
+                motor.estado_inicial(6)
+
+    def test_nunca_hay_fichas_encimadas_en_la_apertura(self):
+        # Con ESQUINA_COMPARTIDA_VACIA en False la casilla comun no
+        # puede acabar en los dos bandos: seria un estado ilegal.
+        for valor in (True, False):
+            with mock.patch.object(config, "ESQUINA_COMPARTIDA_VACIA",
+                                   valor):
+                for n in (6, 8):
+                    estado = motor.estado_inicial(n)
+                    self.assertEqual(estado.fichas_a & estado.fichas_b,
+                                     frozenset())
+
+    def test_acepta_tableros_impares_si_se_cambia_la_paridad(self):
+        # Cambio en vivo tipico: "que funcione con n impar".
+        with mock.patch.object(config, "RESTO_PARIDAD_REQUERIDO", 1):
+            self.assertTrue(motor.validar_n(7))
+            self.assertFalse(motor.validar_n(6))
+            estado = motor.estado_inicial(7)
+            self.assertEqual(len(estado.fichas_a), 6)
+            self.assertEqual(len(estado.fichas_b), 6)
+        # Con DIVISOR_PARIDAD = 1 se aceptan pares e impares a la vez.
+        with mock.patch.object(config, "DIVISOR_PARIDAD", 1):
+            self.assertTrue(motor.validar_n(7))
+            self.assertTrue(motor.validar_n(6))
+
     def test_los_limites_de_tamano_son_configurables(self):
         with mock.patch.object(config, "TAMANO_MINIMO_EXCLUSIVO", 2):
             self.assertTrue(motor.validar_n(4))
